@@ -1,0 +1,139 @@
+name: desktop-build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the web workbench
+        run: pnpm --filter @moonshot-ai/kimi-web build
+
+      - name: Stage web assets for the desktop shell
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force apps/batch-translating-desktop/src-tauri/ui | Out-Null
+          Copy-Item apps/batch-translating-web/dist/* apps/batch-translating-desktop/src-tauri/ui/ -Recurse -Force
+
+      - name: Build the native engine (batch-translating-engine.exe with embedded web assets)
+        working-directory: apps/batch-translating-core
+        env:
+          KIMI_CODE_EXECUTABLE_NAME: batch-translating-engine.exe
+        run: |
+          pnpm build
+          pnpm build:native:sea --profile=release
+
+      - name: Stage the engine next to the desktop shell
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force apps/batch-translating-desktop/src-tauri/binaries | Out-Null
+          Copy-Item apps/batch-translating-core/dist-native/bin/win32-x64/batch-translating-engine.exe `
+            apps/batch-translating-desktop/src-tauri/binaries/batch-translating-engine-x86_64-pc-windows-msvc.exe
+          Get-Item apps/batch-translating-desktop/src-tauri/binaries/batch-translating-engine-x86_64-pc-windows-msvc.exe | `
+            Select-Object Name, Length
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the Tauri desktop shell
+        working-directory: apps/batch-translating-desktop
+        shell: pwsh
+        run: |
+          npm install --no-save @tauri-apps/cli@^2
+          # Never embed build-machine paths (user profile, workspace) into the
+          # binary: dependency crate file!()/panic strings would otherwise
+          # carry the registry path under the runner's user profile. No quotes
+          # here — rustc splits RUSTFLAGS on whitespace and would treat them
+          # as part of the prefix.
+          $env:RUSTFLAGS = "--remap-path-prefix $env:USERPROFILE=. --remap-path-prefix $env:GITHUB_WORKSPACE=."
+          npx tauri build
+
+      # Packaging-leak guard: the installer must never embed the build machine's
+      # environment — no local paths, no private keys, no credentials. The
+      # engine reads all runtime config (KIMI_CODE_HOME, server.token) from the
+      # END USER's home directory, never from the bundle. The SEA binary ships
+      # no third-party native modules, so the scan is strict for both binaries.
+      - name: Verify no local environment leaks into the binaries
+        shell: pwsh
+        run: |
+          $files = @(
+            'apps/batch-translating-desktop/src-tauri/target/release/batch-translating-desktop.exe',
+            'apps/batch-translating-desktop/src-tauri/binaries/batch-translating-engine-x86_64-pc-windows-msvc.exe'
+          )
+          $markers = @(
+            $env:GITHUB_WORKSPACE,
+            $env:USERPROFILE,
+            $env:LOCALAPPDATA,
+            'BEGIN PRIVATE KEY',
+            'BEGIN RSA PRIVATE KEY',
+            'BEGIN OPENSSH PRIVATE KEY'
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) { throw "Missing artifact: $file" }
+            $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($file))
+            foreach ($marker in $markers) {
+              if ($text.Contains($marker)) {
+                throw "Packaging leak: local marker '$marker' found inside $file"
+              }
+            }
+            Write-Host "Clean: $file ($((Get-Item $file).Length) bytes)"
+          }
+
+      - name: List installer bundle contents
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse apps/batch-translating-desktop/src-tauri/target/release/bundle |
+            Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem `
+            apps/batch-translating-desktop/src-tauri/target/release/bundle/nsis/*.exe `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) { throw "No NSIS installer produced." }
+          New-Item -ItemType Directory -Force dist-desktop | Out-Null
+          Copy-Item $installer.FullName "dist-desktop/Batch-Translating-${{ github.ref_name }}.exe"
+          $app = "apps/batch-translating-desktop/src-tauri/target/release/batch-translating-desktop.exe"
+          if (Test-Path $app) { Copy-Item $app dist-desktop/batch-translating-desktop.exe }
+          Get-ChildItem dist-desktop | Select-Object Name, Length
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-translating-desktop
+          path: dist-desktop
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-desktop/*
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body_path: .github/desktop-release-notes.md

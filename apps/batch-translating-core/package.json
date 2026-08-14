@@ -1,0 +1,86 @@
+{
+  "name": "@moonshot-ai/kimi-code",
+  "version": "0.32.0",
+  "description": "Batch Translating CLI — 批量翻译引擎（基于 Kimi Code 二改）",
+  "license": "MIT",
+  "author": "SkylerZhu",
+  "homepage": "https://github.com/SkylerZhu016/Batch-Translating",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SkylerZhu016/Batch-Translating.git",
+    "directory": "apps/batch-translating-core"
+  },
+  "keywords": [
+    "batch-translating",
+    "translation",
+    "epub",
+    "txt",
+    "ai"
+  ],
+  "bin": {
+    "kimi": "dist/main.mjs"
+  },
+  "files": [
+    "dist",
+    "dist-web",
+    "scripts/postinstall.mjs",
+    "scripts/postinstall",
+    "scripts/translation-launcher",
+    "README.batch-translating.md"
+  ],
+  "type": "module",
+  "imports": {
+    "#/cli/sub/web": "./src/cli/sub/web/index.ts",
+    "#/cli/sub/web/*": "./src/cli/sub/web/*.ts",
+    "#/*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "pnpm -C ../batch-translating-web run build && tsdown && node scripts/copy-web-assets.mjs",
+    "catalog:update": "node scripts/update-catalog.mjs --out dist/built-in-catalog.json",
+    "smoke": "node scripts/smoke.mjs",
+    "build:native:js": "node scripts/native/01-bundle.mjs",
+    "build:native:sea": "node scripts/native/build.mjs --profile=local",
+    "build:native:release": "node scripts/native/build.mjs --profile=release",
+    "package:native": "node scripts/native/package.mjs",
+    "produce:native:manifest": "node scripts/native/produce-manifest.mjs",
+    "release:native:resolve": "node scripts/native/resolve-release.mjs",
+    "test:native:smoke": "node scripts/native/smoke.mjs",
+    "dev:cli-only": "tsx --import ../../build/register-raw-text-loader.mjs ./src/main.ts",
+    "dev:server": "KIMI_CODE_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --debug-endpoints",
+    "dev:kap-server": "KIMI_CODE_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --debug-endpoints",
+    "dev:kap-server:multi": "KIMI_CODE_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --debug-endpoints",
+    "dev:server:restart": "node scripts/dev-server-restart.mjs",
+    "dev:prod": "node dist/main.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm -w run build:packages && vitest run",
+    "e2e": "pnpm -w run build:packages && KIMI_E2E=1 vitest run test/e2e",
+    "e2e:real": "pnpm -w run build:packages && KIMI_E2E_REAL=1 vitest run test/e2e/real-llm-smoke.e2e.test.ts",
+    "postinstall": "node scripts/postinstall.mjs"
+  },
+  "devDependencies": {
+    "@moonshot-ai/agent-core-v2": "workspace:^",
+    "@moonshot-ai/kap-server": "workspace:^",
+    "@moonshot-ai/kimi-code-oauth": "workspace:^",
+    "@moonshot-ai/kimi-code-sdk": "workspace:^",
+    "@moonshot-ai/kimi-telemetry": "workspace:^",
+    "@moonshot-ai/kimi-web": "workspace:^",
+    "@moonshot-ai/minidb": "workspace:^",
+    "@types/semver": "^7.7.0",
+    "@types/yazl": "^2.4.6",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "pathe": "^2.0.3",
+    "postject": "1.0.0-alpha.6",
+    "semver": "^7.7.4",
+    "smol-toml": "^1.6.1",
+    "tsx": "^4.21.0",
+    "yauzl": "^3.3.0",
+    "yazl": "^3.3.1",
+    "@types/yauzl": "^2.10.3",
+    "zod": "^4.3.6"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

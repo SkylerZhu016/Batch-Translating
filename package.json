@@ -1,0 +1,37 @@
+{
+  "name": "batch-translating-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "build:packages": "pnpm -r --filter './packages/*' run build",
+    "dev:web": "pnpm -C apps/batch-translating-web run dev",
+    "dev:server": "pnpm -C apps/batch-translating-core run dev:server",
+    "dev:kap-server": "pnpm -C apps/batch-translating-core run dev:kap-server",
+    "dev:v2": "pnpm -C apps/batch-translating-core run dev:kap-server:multi",
+    "typecheck": "pnpm run build:packages && pnpm -r --filter './packages/*' run typecheck && pnpm --filter @moonshot-ai/kimi-code run typecheck && pnpm --filter @moonshot-ai/kimi-web run typecheck",
+    "lint": "oxlint --type-aware",
+    "lint:fix": "pnpm run lint --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "clean": "pnpm -r run clean"
+  },
+  "devDependencies": {
+    "@microsoft/api-extractor": "7.58.7",
+    "@types/node": "^22.15.3",
+    "@vitest/coverage-v8": "4.1.4",
+    "oxlint": "1.59.0",
+    "oxlint-tsgolint": "0.20.0",
+    "tsdown": "0.22.0",
+    "tsx": "^4.21.0",
+    "typescript": "6.0.2",
+    "vitest": "4.1.4"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "packageManager": "pnpm@10.33.0"
+}

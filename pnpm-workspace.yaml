@@ -1,0 +1,15 @@
+packages:
+  - packages/*
+  - apps/*
+  # The Tauri desktop shell is a pure Rust package (no pnpm deps); it must not
+  # join the JS workspace, otherwise pnpm tries to install it.
+  - "!apps/batch-translating-desktop"
+
+catalog:
+  zod: 4.3.6
+
+overrides:
+  "kimi-code>@tailwindcss/vite": "4.1.18"
+  "ssh2@1.17.0>cpu-features": "-"
+  "ssh2@1.17.0>nan": "-"
+  "kimi-code>tailwindcss": "4.1.18"

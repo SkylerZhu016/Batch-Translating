@@ -1,0 +1,25 @@
+[package]
+name = "batch-translating-desktop"
+version = "0.1.0"
+description = "Native desktop shell for Batch Translating"
+edition = "2021"
+license = "MIT"
+rust-version = "1.77.2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+# Build-machine path remapping is applied via RUSTFLAGS in CI
+# (--remap-path-prefix) so no local environment paths ever enter the binary.

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Batch Translating",
+  "version": "0.1.0",
+  "identifier": "com.skylerzhu.batch-translating",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://127.0.0.1:5175",
+    "beforeBuildCommand": "",
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Utility",
+    "shortDescription": "Batch literary translation workbench",
+    "longDescription": "A desktop workbench for large-batch book translation (EPUB/TXT) powered by a local agent swarm.",
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "externalBin": ["binaries/batch-translating-engine"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": ["SimpChinese", "English"],
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

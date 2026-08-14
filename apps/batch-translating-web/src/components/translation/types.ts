@@ -1,0 +1,107 @@
+export type TranslationView = 'projects' | 'run' | 'issues' | 'outputs' | 'agent-console' | 'settings';
+
+export type TranslationProjectStatus = 'draft' | 'running' | 'paused' | 'completed' | 'failed';
+
+export type TranslationStageId =
+  | 'parse'
+  | 'preAnalysis'
+  | 'smokeTest'
+  | 'firstTranslation'
+  | 'firstReview'
+  | 'secondTranslation'
+  | 'secondReview'
+  | 'consistencyReview'
+  | 'fullAudit'
+  | 'epubExport';
+
+export type TranslationStageStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+
+export interface TranslationWorkflowOptions {
+  firstTranslation: true;
+  firstReview: true;
+  secondTranslation: boolean;
+  secondReview: boolean;
+  consistencyReview: boolean;
+}
+
+export interface TranslationProjectDraft {
+  title: string;
+  sourcePath: string;
+  /** TXT only: custom chapter-heading regex; empty means the default. */
+  chapterPattern: string;
+  workspacePath: string;
+  agentCount: number;
+  workflow: TranslationWorkflowOptions;
+}
+
+export interface TranslationProject extends TranslationProjectDraft {
+  id: string;
+  status: TranslationProjectStatus;
+  completedChapters: number;
+  totalChapters: number;
+  updatedAt: string;
+  createdAt?: string;
+  outputPath?: string;
+  issueCount?: number;
+}
+
+export interface TranslationStage {
+  id: TranslationStageId;
+  status: TranslationStageStatus;
+  detail?: string;
+}
+
+export type TranslationAgentStatus = 'idle' | 'working' | 'completed' | 'failed';
+
+export interface TranslationAgent {
+  id: string;
+  name: string;
+  status: TranslationAgentStatus;
+  stageId?: TranslationStageId;
+  chapterName?: string;
+  progress?: number;
+}
+
+export type TranslationChapterStatus =
+  | 'pending'
+  | 'translating'
+  | 'reviewing'
+  | 'completed'
+  | 'failed';
+
+export interface TranslationChapter {
+  id: string;
+  title: string;
+  status: TranslationChapterStatus;
+  progress: number;
+  agentName?: string;
+  issueCount?: number;
+}
+
+export type TranslationIssueSeverity = 'info' | 'warning' | 'error';
+
+export interface TranslationIssue {
+  id: string;
+  projectId: string;
+  projectTitle: string;
+  severity: TranslationIssueSeverity;
+  message: string;
+  chapterName?: string;
+  stageId?: TranslationStageId;
+  createdAt: string;
+}
+
+export interface TranslationOutput {
+  id: string;
+  projectId: string;
+  projectTitle: string;
+  sourcePath: string;
+  outputPath: string;
+  exportedAt: string;
+}
+
+export interface TranslationSettings {
+  defaultModel: string;
+  defaultAgentCount: number;
+  defaultWorkflow: TranslationWorkflowOptions;
+}
