@@ -33,5 +33,15 @@
   "engines": {
     "node": ">=24.15.0"
   },
-  "packageManager": "pnpm@10.33.0"
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "msw",
+      "node-pty",
+      "protobufjs",
+      "ssh2",
+      "tree-sitter-bash"
+    ]
+  }
 }
