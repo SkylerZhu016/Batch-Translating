@@ -33,6 +33,8 @@ const defaultIo: TranslationDomainCliIO = {
   stderr: (text) => process.stderr.write(text),
 };
 
+const MIN_AGENT_TASK_LEASE_DURATION_MS = 7_500_000;
+
 function takeOption(args: string[], option: string): string | undefined {
   const direct = args.findIndex((arg) => arg === option);
   if (direct >= 0) {
@@ -104,10 +106,12 @@ function help(): Record<string, unknown> {
       'task claim': {
         required: ['projectId', 'workerId', 'leaseDurationMs'],
         optional: ['taskTypes'],
+        enforced: [`leaseDurationMs>=${String(MIN_AGENT_TASK_LEASE_DURATION_MS)}`],
       },
       'task start': { required: ['taskId', 'attemptId', 'workerId'] },
       'task renew': {
         required: ['taskId', 'attemptId', 'workerId', 'leaseDurationMs'],
+        enforced: [`leaseDurationMs>=${String(MIN_AGENT_TASK_LEASE_DURATION_MS)}`],
       },
       'task complete': {
         required: ['projectId', 'taskId', 'attemptId', 'workerId', 'sourceHashes', 'payload', 'provenance'],
@@ -160,6 +164,17 @@ function help(): Record<string, unknown> {
       'merge validate': { required: ['artifactId', 'projectId', 'expectedInstructionVersion'], optional: ['expectedPromptVersion', 'expectedContextHash', 'expectedSourceHashes', 'expectedParagraphIds', 'expectedOldTranslationHashes'] },
     },
   };
+}
+
+function withMinimumAgentTaskLease<T extends { leaseDurationMs: number }>(payload: T): T {
+  if (
+    !Number.isSafeInteger(payload.leaseDurationMs) ||
+    payload.leaseDurationMs <= 0 ||
+    payload.leaseDurationMs >= MIN_AGENT_TASK_LEASE_DURATION_MS
+  ) {
+    return payload;
+  }
+  return { ...payload, leaseDurationMs: MIN_AGENT_TASK_LEASE_DURATION_MS };
 }
 
 /**
@@ -231,7 +246,9 @@ export async function runTranslationDomainCli(
       assertNoArgs(args);
       data = ledger.listTasks(projectId, payload.states);
     } else if (group === 'task' && command === 'claim') {
-      const payload = readPayload<Parameters<TranslationProjectLedger['claimNextTask']>[0]>(args);
+      const payload = withMinimumAgentTaskLease(
+        readPayload<Parameters<TranslationProjectLedger['claimNextTask']>[0]>(args),
+      );
       assertNoArgs(args);
       data = ledger.claimNextTask(payload) ?? null;
     } else if (group === 'task' && command === 'start') {
@@ -239,12 +256,14 @@ export async function runTranslationDomainCli(
       assertNoArgs(args);
       data = ledger.markAttemptRunning(payload.taskId, payload.attemptId, payload.workerId);
     } else if (group === 'task' && command === 'renew') {
-      const payload = readPayload<{
-        taskId: string;
-        attemptId: string;
-        workerId: string;
-        leaseDurationMs: number;
-      }>(args);
+      const payload = withMinimumAgentTaskLease(
+        readPayload<{
+          taskId: string;
+          attemptId: string;
+          workerId: string;
+          leaseDurationMs: number;
+        }>(args),
+      );
       assertNoArgs(args);
       data = {
         leaseExpiresAt: ledger.renewTaskLease(
