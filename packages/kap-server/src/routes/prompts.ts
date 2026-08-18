@@ -273,19 +273,32 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         : await acquirePromptSubmissionLock(submissionQueues, lockKey);
       try {
         const requestFingerprint = promptRequestFingerprint(req.body);
-        // Fail fast on stale file references before anything is resolved or
-        // mutated: a bad `file_id` must not create the agent, register `main`
-        // in session metadata, or touch the session's controls.
-        await assertPromptFileRefs(req.body, core.accessor.get(IFileService));
-        const resolved = await resolvePrompt(core, session_id, req.body.agent_id);
+        // Recover a durable idempotency receipt before dereferencing uploads.
+        // The original upload may have been collected after the paid prompt
+        // was accepted while its HTTP response was lost. Looking only at an
+        // already-existing agent is side-effect free: an unknown request still
+        // reaches the file gate below before `main` can be created or controls
+        // can be mutated.
+        let sessionHandle: ISessionScopeHandle | undefined;
         if (req.body.idempotency_key !== undefined) {
-          const existing = resolved.prompt.find?.(req.body.idempotency_key);
+          sessionHandle = await resolveSession(core, session_id);
+          const agentId = req.body.agent_id ?? MAIN_AGENT_ID;
+          const agent = sessionHandle.accessor.get(IAgentLifecycleService).get(agentId);
+          const existing = agent
+            ?.accessor.get(IAgentPromptService)
+            .find?.(req.body.idempotency_key);
           if (existing !== undefined) {
             assertIdempotentRetry(existing.message, req.body.content, requestFingerprint);
             reply.send(okEnvelope(projectPromptSnapshot(existing), req.id));
             return;
           }
         }
+
+        // Fail fast on stale file references before an agent is created or any
+        // model/thinking/permission controls are changed.
+        await assertPromptFileRefs(req.body, core.accessor.get(IFileService));
+        sessionHandle ??= await resolveSession(core, session_id);
+        const resolved = await resolvePromptFromSession(sessionHandle, req.body.agent_id);
         await resolved.auth.ensureReady();
 
         // Media resolution runs BEFORE any control mutation, so a failed
@@ -342,9 +355,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           }
         }
         const parts = contentToCoreParts(resolvedBody.content);
-        const session = await resolveSession(core, session_id);
         await applyPromptMetadataUpdate({
-          metadata: session.accessor.get(ISessionMetadata),
+          metadata: sessionHandle.accessor.get(ISessionMetadata),
           eventService: core.accessor.get(IEventService),
           sessionId: session_id,
         }, promptMetadataTextFromContentParts(parts));
@@ -528,6 +540,15 @@ function assertIdempotentRetry(
     throw new Error2(
       ErrorCodes.REQUEST_INVALID,
       'idempotency_key was already used for a different prompt request',
+    );
+  }
+  if (
+    existing.content.some((part) => part.type !== 'text')
+    || incoming.some((part) => part.type !== 'text')
+  ) {
+    throw new Error2(
+      ErrorCodes.REQUEST_INVALID,
+      'legacy idempotency receipt cannot safely verify attachment identity',
     );
   }
   const existingText = existing
