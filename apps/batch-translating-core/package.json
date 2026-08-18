@@ -57,6 +57,9 @@
   },
   "devDependencies": {
     "@moonshot-ai/agent-core-v2": "workspace:^",
+    "@batch-translating/translation-domain": "workspace:^",
+    "@batch-translating/translation-rag": "workspace:^",
+    "@batch-translating/translation-tools": "workspace:^",
     "@moonshot-ai/kap-server": "workspace:^",
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
     "@moonshot-ai/kimi-code-sdk": "workspace:^",
@@ -78,6 +81,6 @@
     "zod": "^4.3.6"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.15.0"
   }
 }
