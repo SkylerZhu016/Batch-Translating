@@ -54,10 +54,7 @@ import type {
 import { useAuthGate } from './composables/useAuthGate';
 import { useConfirmDialog } from './composables/useConfirmDialog';
 import { useKimiWebClient } from './composables/useKimiWebClient';
-import {
-  isAllowedTranslationModel,
-  TRANSLATION_MODEL_PRIORITY,
-} from './composables/useTranslationCoordinator';
+import { isAllowedTranslationModel } from './composables/useTranslationCoordinator';
 import { localeConfirmed } from './i18n';
 import { verifiedTranslationOutputPath } from './translation/project';
 import {
@@ -200,27 +197,14 @@ function defaultWorkflow(): TranslationWorkflowOptions {
 }
 
 function defaultModelId(): string {
-  const preferred = preferredAvailableTranslationModels()[0]?.id;
-  if (preferred) return preferred;
+  const available = availableTranslationModels();
   const configured = client.defaultModel.value;
-  if (configured && isAllowedTranslationModel(configured)) return configured;
-  return '';
+  if (configured && available.some((model) => model.id === configured)) return configured;
+  return available[0]?.id ?? '';
 }
 
-function translationModelPriority(modelId: string): number {
-  const modelName = modelId.split('/').at(-1)?.trim();
-  const priority = TRANSLATION_MODEL_PRIORITY.findIndex((candidate) => candidate === modelName);
-  return priority === -1 ? TRANSLATION_MODEL_PRIORITY.length : priority;
-}
-
-function preferredAvailableTranslationModels() {
-  const allowed = [...client.models.value]
-    .filter((model) => isAllowedTranslationModel(model.id))
-    .sort((left, right) => translationModelPriority(left.id) - translationModelPriority(right.id));
-  const bestPriority = allowed[0] ? translationModelPriority(allowed[0].id) : undefined;
-  return bestPriority === undefined
-    ? []
-    : allowed.filter((model) => translationModelPriority(model.id) === bestPriority);
+function availableTranslationModels() {
+  return [...client.models.value].filter((model) => isAllowedTranslationModel(model.id));
 }
 
 function defaultWorkspacePath(): string {
@@ -324,7 +308,7 @@ function loadSettings(): TranslationSettings {
 const createDraft = ref<TranslationProjectDraft>(newProjectDraft());
 const settingsDraft = ref<TranslationSettings>(loadSettings());
 
-const modelOptions = computed(() => preferredAvailableTranslationModels()
+const modelOptions = computed(() => availableTranslationModels()
   .map((model) => ({
     value: model.id,
     label: model.displayName ?? model.model ?? model.id,
@@ -335,10 +319,8 @@ watch(
   ([options, configured]) => {
     const available = new Set(options.map((option) => option.value));
     const current = settingsDraft.value.defaultModel;
-    if (current && isAllowedTranslationModel(current) && available.has(current)) return;
-    settingsDraft.value.defaultModel = configured
-      && isAllowedTranslationModel(configured)
-      && available.has(configured)
+    if (current && available.has(current)) return;
+    settingsDraft.value.defaultModel = configured && available.has(configured)
       ? configured
       : (options[0]?.value ?? '');
   },
@@ -392,24 +374,28 @@ function capabilityProbeFromRagStatus(
   };
 }
 
-function qualityPolicyFor(workflow: TranslationWorkflowOptions): TranslationQualityPolicy | undefined {
+function qualityPolicyFor(
+  workflow: TranslationWorkflowOptions,
+  selectedModelId: string,
+): TranslationQualityPolicy | undefined {
   try {
     return createTranslationQualityPolicy({
       capabilityProbe: capabilityProbeFromRagStatus(client.translationRagStatus.value),
       requestedWorkflow: workflowForRunner(workflow),
       availableModelIds: modelOptions.value.map((option) => option.value),
+      selectedModelId,
     });
   } catch {
-    // No allowed model or no trustworthy capability result: UI stays locked.
+    // No selected/configured model or no trustworthy capability result: UI stays locked.
     return undefined;
   }
 }
 
 const createProjectQualityPolicy = computed(
-  () => qualityPolicyFor(createDraft.value.workflow),
+  () => qualityPolicyFor(createDraft.value.workflow, settingsDraft.value.defaultModel),
 );
 const settingsQualityPolicy = computed(
-  () => qualityPolicyFor(settingsDraft.value.defaultWorkflow),
+  () => qualityPolicyFor(settingsDraft.value.defaultWorkflow, settingsDraft.value.defaultModel),
 );
 const bgeSetupState = computed<BgeModelSetupState>(() => {
   const status = client.translationRagStatus.value;

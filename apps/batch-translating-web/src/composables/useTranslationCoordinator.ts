@@ -13,6 +13,7 @@ import {
   createTranslationQualityPolicyReceipt,
   hasVerifiedTranslationInitialization,
   hasVerifiedTranslationCompletion,
+  isAllowedTranslationQualityModel,
   mergeTranslationCompletionVerification,
   mergeTranslationInitialization,
   mergeTranslationInstructionReceipt,
@@ -33,10 +34,6 @@ export const TRANSLATION_METADATA_KEY = 'batchTranslation';
 export const TRANSLATION_COORDINATOR_PROFILE = 'translation-coordinator';
 /** @deprecated Use TRANSLATION_COORDINATOR_PROFILE. */
 export const TRANSLATION_AGENT_PROFILE = TRANSLATION_COORDINATOR_PROFILE;
-export const TRANSLATION_MODEL_PRIORITY = [
-  'DeepSeek V4 Flash: Go',
-  'Qwen 3.7 Plus: Go',
-] as const;
 
 type SubmitOutcome = 'ok' | 'terminal' | 'rejected' | 'uncertain';
 type GoalControl = 'pause' | 'resume' | 'cancel';
@@ -109,7 +106,7 @@ export interface TranslationInstructionRuntimeAck {
 export interface TranslationCoordinatorHost {
   sessions: ComputedRef<AppSession[]>;
   activeSessionId: ComputedRef<string>;
-  /** Configured model catalog, used only to enforce DeepSeek-before-Qwen on new projects. */
+  /** Configured model catalog used to validate the user's selected/default model. */
   availableModelIds?: ComputedRef<string[]>;
   createSession(input: {
     title?: string;
@@ -204,22 +201,13 @@ function now(): string {
 }
 
 export function isAllowedTranslationModel(model: string | undefined): boolean {
-  const normalized = model?.split('/').at(-1)?.trim();
-  return TRANSLATION_MODEL_PRIORITY.some((candidate) => candidate === normalized);
+  return typeof model === 'string' && isAllowedTranslationQualityModel(model);
 }
 
 function requireAllowedTranslationModel(model: string | undefined): string {
   const pinned = model?.trim();
   if (pinned && isAllowedTranslationModel(pinned)) return pinned;
-  throw new Error(
-    `Translation requires ${TRANSLATION_MODEL_PRIORITY[0]} or, when unavailable, ${TRANSLATION_MODEL_PRIORITY[1]}`,
-  );
-}
-
-function translationModelPriority(model: string): number {
-  const normalized = model.split('/').at(-1)?.trim();
-  const priority = TRANSLATION_MODEL_PRIORITY.findIndex((candidate) => candidate === normalized);
-  return priority === -1 ? TRANSLATION_MODEL_PRIORITY.length : priority;
+  throw new Error('Select a configured model before starting the translation project.');
 }
 
 function qualityProbeFromRuntime(
@@ -925,15 +913,9 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
         capabilityProbe: qualityProbeFromRuntime(ragRuntime),
         requestedWorkflow: input.workflow,
         availableModelIds,
+        selectedModelId: input.model,
       });
       const pinnedModel = requireAllowedTranslationModel(qualityPolicy.model.selectedModelId);
-      if (
-        input.model?.trim()
-        && requireAllowedTranslationModel(input.model) !== pinnedModel
-        && translationModelPriority(input.model) < translationModelPriority(pinnedModel)
-      ) {
-        throw new Error('The requested primary translation model is listed but could not be selected');
-      }
       const sourceName = input.sourceFile?.name ?? input.sourcePath!.split(/[\\/]/).at(-1)!;
       const uploaded = input.sourceFile
         ? await host.uploadFile(input.sourceFile, sourceName)

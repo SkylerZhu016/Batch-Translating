@@ -68,8 +68,6 @@ import { SAFE_FILE_ID, SAFE_PROJECT_ID, SHA256 } from './types';
 
 const PROJECT_METADATA_FILE = 'project.runtime.json';
 const DATABASE_FILE = 'translation.sqlite3';
-const PRIMARY_MODEL = 'DeepSeek V4 Flash: Go';
-const FALLBACK_MODEL = 'Qwen 3.7 Plus: Go';
 const MODEL_DESTINATION_DIRECTORY = 'bge-m3';
 const RAG_RUNTIME_ENV = 'BATCH_TRANSLATING_RAG_RUNTIME';
 const DEFAULT_FINAL_TASK_TYPES = [
@@ -1384,15 +1382,22 @@ function validateRuntimeProject(value: unknown): RuntimeTranslationProject {
 }
 
 function splitPinnedModel(value: string): { providerId: string; modelId: string } {
-  const parts = value.split('/');
-  const modelId = parts.at(-1)?.trim() ?? '';
-  if (modelId !== PRIMARY_MODEL && modelId !== FALLBACK_MODEL) {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 512 || /[\u0000-\u001f\u007f-\u009f]/u.test(normalized)) {
     throw new TranslationRuntimeError(
       'invalid',
-      `Translation model must be ${PRIMARY_MODEL}, with ${FALLBACK_MODEL} allowed only as fallback`,
+      'Translation model must be a non-empty identifier of at most 512 characters without control characters',
     );
   }
-  const providerId = parts.length > 1 ? parts.slice(0, -1).join('/').trim() : 'configured';
+
+  const parts = normalized.split('/');
+  const modelId = parts.at(-1)?.trim() ?? '';
+  if (!modelId) throw new TranslationRuntimeError('invalid', 'Translation model identity is invalid');
+  const providerParts = parts.slice(0, -1).map((part) => part.trim());
+  if (providerParts.some((part) => !part)) {
+    throw new TranslationRuntimeError('invalid', 'Translation provider identity is invalid');
+  }
+  const providerId = providerParts.length > 0 ? providerParts.join('/') : 'configured';
   if (!providerId) throw new TranslationRuntimeError('invalid', 'Translation provider identity is invalid');
   return { providerId, modelId };
 }

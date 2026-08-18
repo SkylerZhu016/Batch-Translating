@@ -30,9 +30,7 @@ import {
 import { TRANSLATION_PROMPT_VERSION } from './prompts';
 import {
   detectTranslationQualityCapability,
-  FALLBACK_TRANSLATION_MODEL,
   isAllowedTranslationQualityModel,
-  PRIMARY_TRANSLATION_MODEL,
 } from './qualityPolicy';
 
 export const MAX_OVERRIDE_INSTRUCTION_LENGTH = 12_000;
@@ -649,23 +647,16 @@ export function parseTranslationQualityPolicyReceipt(
       errors.push('qualityPolicy.policy.model.selectedModelId is required');
     } else {
       if (!isAllowedTranslationQualityModel(policy.model.selectedModelId)) {
-        errors.push('qualityPolicy.policy.model is not allowed for translation');
+        errors.push('qualityPolicy.policy.model identifier is invalid');
       }
       const selectedName = policy.model.selectedModelName;
       const fallbackUsed = policy.model.fallbackUsed;
-      if (
-        selectedName !== PRIMARY_TRANSLATION_MODEL
-        && selectedName !== FALLBACK_TRANSLATION_MODEL
-      ) {
-        errors.push('qualityPolicy.policy.model.selectedModelName is invalid');
+      const expectedName = policy.model.selectedModelId.split(/[\\/]/).at(-1)?.trim();
+      if (!isNonEmptyString(selectedName) || selectedName !== expectedName) {
+        errors.push('qualityPolicy.policy.model.selectedModelName must match the selected model id');
       }
       if (typeof fallbackUsed !== 'boolean') {
         errors.push('qualityPolicy.policy.model.fallbackUsed must be boolean');
-      } else if (
-        (fallbackUsed && selectedName !== FALLBACK_TRANSLATION_MODEL)
-        || (!fallbackUsed && selectedName !== PRIMARY_TRANSLATION_MODEL)
-      ) {
-        errors.push('qualityPolicy.policy.model fallback evidence is inconsistent');
       }
     }
     if (!isRecord(policy.capability)) {

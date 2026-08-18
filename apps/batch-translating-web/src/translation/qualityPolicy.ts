@@ -7,8 +7,6 @@ import type { WorkflowOptions } from './types';
  */
 export const TRANSLATION_QUALITY_POLICY_VERSION = 'quality-policy-v1' as const;
 export const BGE_M3_MODEL_ID = 'BAAI/bge-m3' as const;
-export const PRIMARY_TRANSLATION_MODEL = 'DeepSeek V4 Flash: Go' as const;
-export const FALLBACK_TRANSLATION_MODEL = 'Qwen 3.7 Plus: Go' as const;
 
 export type TranslationQualityPolicyVersion = typeof TRANSLATION_QUALITY_POLICY_VERSION;
 export type TranslationQualityMode = 'bge-rag' | 'adjacent-chapter-fallback';
@@ -68,7 +66,8 @@ export interface TranslationQualityCapability {
 
 export interface TranslationModelResolution {
   selectedModelId: string;
-  selectedModelName: typeof PRIMARY_TRANSLATION_MODEL | typeof FALLBACK_TRANSLATION_MODEL;
+  selectedModelName: string;
+  /** Kept in persisted receipts for backward compatibility; new product selection never silently falls back. */
   fallbackUsed: boolean;
   invariant: LocalizedPolicyText;
 }
@@ -112,8 +111,10 @@ export interface TranslationQualityPolicy {
 export interface CreateTranslationQualityPolicyInput {
   capabilityProbe: TranslationQualityCapabilityProbe;
   requestedWorkflow: WorkflowOptions;
-  /** IDs may be provider-qualified; matching is performed on their final path segment. */
+  /** Provider-qualified IDs currently exposed by the user's configured catalog. */
   availableModelIds: readonly string[];
+  /** The user's explicit selection, or their configured default model. */
+  selectedModelId?: string;
 }
 
 export interface QualityChapterReference {
@@ -174,10 +175,10 @@ export interface CoordinatorQualityPolicyEnvelope {
   };
   model_policy: {
     selected_model_id: string;
-    selected_model_name: typeof PRIMARY_TRANSLATION_MODEL | typeof FALLBACK_TRANSLATION_MODEL;
-    fallback_used: boolean;
-    primary: typeof PRIMARY_TRANSLATION_MODEL;
-    fallback_only_if_primary_unavailable: typeof FALLBACK_TRANSLATION_MODEL;
+    selected_model_name: string;
+    selection_source: 'user-default-or-selection';
+    pinned_for_project: true;
+    silent_switch_forbidden: true;
   };
   minimum_quality_gates: {
     translation_passes: 1;
@@ -282,39 +283,42 @@ export function detectTranslationQualityCapability(
 }
 
 export function isAllowedTranslationQualityModel(modelId: string): boolean {
-  const leaf = modelLeaf(modelId);
-  return leaf === PRIMARY_TRANSLATION_MODEL || leaf === FALLBACK_TRANSLATION_MODEL;
+  const normalized = modelId.trim();
+  return normalized.length > 0
+    && normalized.length <= 512
+    && modelLeaf(normalized).length > 0
+    && !/[\u0000-\u001f\u007f]/u.test(normalized);
 }
 
-/** DeepSeek is selected whenever available; Qwen is considered only after a proven miss. */
+/** Resolve the user's selected/default model and pin it without a silent fallback. */
 export function resolveTranslationQualityModel(
   availableModelIds: readonly string[],
+  selectedModelId?: string,
 ): TranslationModelResolution {
-  const normalized = availableModelIds
+  const normalized = [...new Set(availableModelIds
     .map((modelId) => modelId.trim())
-    .filter((modelId) => modelId.length > 0);
-  const primary = normalized.find((modelId) => modelLeaf(modelId) === PRIMARY_TRANSLATION_MODEL);
-  const fallback = normalized.find((modelId) => modelLeaf(modelId) === FALLBACK_TRANSLATION_MODEL);
-  const selectedModelId = primary ?? fallback;
+    .filter((modelId) => isAllowedTranslationQualityModel(modelId)))];
+  const requested = selectedModelId?.trim();
 
-  if (selectedModelId === undefined) {
-    throw new Error(
-      `Translation requires ${PRIMARY_TRANSLATION_MODEL}; ${FALLBACK_TRANSLATION_MODEL} is allowed only when the primary model is unavailable.`,
-    );
+  if (requested && !isAllowedTranslationQualityModel(requested)) {
+    throw new Error('The selected translation model identifier is invalid.');
   }
+  if (requested && !normalized.includes(requested)) {
+    throw new Error('The selected translation model is not present in the configured model catalog.');
+  }
+  if (!requested && normalized.length > 1) {
+    throw new Error('Select a translation model before creating the project.');
+  }
+  const resolvedModelId = requested ?? normalized[0];
+  if (!resolvedModelId) throw new Error('Configure at least one model before creating a translation project.');
 
-  const fallbackUsed = primary === undefined;
   return {
-    selectedModelId,
-    selectedModelName: fallbackUsed ? FALLBACK_TRANSLATION_MODEL : PRIMARY_TRANSLATION_MODEL,
-    fallbackUsed,
+    selectedModelId: resolvedModelId,
+    selectedModelName: modelLeaf(resolvedModelId),
+    fallbackUsed: false,
     invariant: {
-      zhCN: fallbackUsed
-        ? `已确认 ${PRIMARY_TRANSLATION_MODEL} 不可用，因此使用唯一允许的后备模型 ${FALLBACK_TRANSLATION_MODEL}。`
-        : `必须使用 ${PRIMARY_TRANSLATION_MODEL}；不得静默切换 provider 或模型。`,
-      en: fallbackUsed
-        ? `${PRIMARY_TRANSLATION_MODEL} is confirmed unavailable, so the only permitted fallback, ${FALLBACK_TRANSLATION_MODEL}, is selected.`
-        : `Use ${PRIMARY_TRANSLATION_MODEL} and never silently switch provider or model.`,
+      zhCN: `本项目固定使用用户选择的模型 ${modelLeaf(resolvedModelId)}；运行中不得静默切换 provider 或模型。`,
+      en: `This project is pinned to the user-selected model ${modelLeaf(resolvedModelId)}; never silently switch provider or model during the run.`,
     },
   };
 }
@@ -323,7 +327,7 @@ export function createTranslationQualityPolicy(
   input: CreateTranslationQualityPolicyInput,
 ): TranslationQualityPolicy {
   const capability = detectTranslationQualityCapability(input.capabilityProbe);
-  const model = resolveTranslationQualityModel(input.availableModelIds);
+  const model = resolveTranslationQualityModel(input.availableModelIds, input.selectedModelId);
   const fallbackMode = capability.mode === 'adjacent-chapter-fallback';
   const effectiveWorkflow: WorkflowOptions = {
     ...input.requestedWorkflow,
@@ -558,9 +562,9 @@ export function buildCoordinatorQualityPolicyEnvelope(
     model_policy: {
       selected_model_id: policy.model.selectedModelId,
       selected_model_name: policy.model.selectedModelName,
-      fallback_used: policy.model.fallbackUsed,
-      primary: PRIMARY_TRANSLATION_MODEL,
-      fallback_only_if_primary_unavailable: FALLBACK_TRANSLATION_MODEL,
+      selection_source: 'user-default-or-selection',
+      pinned_for_project: true,
+      silent_switch_forbidden: true,
     },
     minimum_quality_gates: {
       translation_passes: policy.minimums.translationPasses,
