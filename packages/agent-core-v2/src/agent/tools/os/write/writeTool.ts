@@ -20,6 +20,7 @@
 
 import { dirname } from 'pathe';
 
+import { abortable, createDeadlineAbortSignal } from '#/_base/utils/abort';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { type HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { unwrapErrorCause } from '#/_base/errors/errors';
@@ -40,6 +41,8 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import { literalRulePattern, matchesPathRuleSubject } from '#/tool/rule-match';
 import { IWriteTool, WriteInputSchema, type WriteInput } from './write';
 import WRITE_DESCRIPTION from './write.md?raw';
+
+const WRITE_TIMEOUT_MS = 120_000;
 
 export class WriteTool implements IWriteTool {
   declare readonly _serviceBrand: undefined;
@@ -82,53 +85,106 @@ export class WriteTool implements IWriteTool {
           pathClass: this.env.pathClass,
           homeDir: this.env.homeDir,
         }),
-      execute: () => this.execution(args, path),
+      execute: ({ signal }) => this.execution(args, path, signal),
     };
   }
 
-  private async execution(args: WriteInput, safePath: string): Promise<ExecutableToolResult> {
-    const parentError = await this.ensureParentDirectory(safePath);
+  private async execution(
+    args: WriteInput,
+    safePath: string,
+    parentSignal: AbortSignal,
+  ): Promise<ExecutableToolResult> {
+    parentSignal.throwIfAborted();
+    if (this.fs.supportsAbortableWrites !== true) {
+      try {
+        // This only keeps Pause/Stop responsive. A backend without the
+        // capability may still complete its underlying remote write later.
+        return await abortable(this.write(args, safePath, parentSignal), parentSignal);
+      } catch (error) {
+        parentSignal.throwIfAborted();
+        return this.writeError(args.path, error);
+      }
+    }
+    const deadline = createDeadlineAbortSignal(parentSignal, WRITE_TIMEOUT_MS);
+    try {
+      return await abortable(this.write(args, safePath, deadline.signal), deadline.signal);
+    } catch (error) {
+      parentSignal.throwIfAborted();
+      if (deadline.timedOut()) {
+        return {
+          isError: true,
+          output:
+            `Write timed out after ${String(WRITE_TIMEOUT_MS / 1000)} seconds for ${args.path}. ` +
+            'This is a retryable filesystem error: inspect the target, then retry the Write call (avoid duplicating content when appending).',
+        };
+      }
+      return this.writeError(args.path, error);
+    } finally {
+      deadline.clear();
+    }
+  }
+
+  private async write(
+    args: WriteInput,
+    safePath: string,
+    signal: AbortSignal,
+  ): Promise<ExecutableToolResult> {
+    const parentError = await this.ensureParentDirectory(safePath, signal);
     if (parentError !== undefined) {
       return { isError: true, output: parentError };
     }
 
-    try {
-      const mode = args.mode ?? 'overwrite';
-      if (mode === 'append') {
-        await this.fs.appendText(safePath, args.content);
-      } else {
-        await this.fs.writeText(safePath, args.content);
-      }
-      const bytesWritten = Buffer.byteLength(args.content, 'utf8');
-      return {
-        output: `${mode === 'append' ? 'Appended' : 'Wrote'} ${String(bytesWritten)} bytes to ${args.path}`,
-      };
-    } catch (error) {
-      const code = (unwrapErrorCause(error) as { code?: unknown } | null)?.code;
-      if (code === 'ENOENT') {
-        return {
-          isError: true,
-          output: `Failed to write ${args.path}: parent directory does not exist.`,
-        };
-      }
-      return {
-        isError: true,
-        output: error instanceof Error ? error.message : String(error),
-      };
+    const mode = args.mode ?? 'overwrite';
+    const options = this.fs.supportsAbortableWrites === true ? { signal } : undefined;
+    if (mode === 'append' && options !== undefined) {
+      await this.fs.appendText(safePath, args.content, options);
+    } else if (mode === 'append') {
+      await this.fs.appendText(safePath, args.content);
+    } else if (options !== undefined) {
+      await this.fs.writeText(safePath, args.content, options);
+    } else {
+      await this.fs.writeText(safePath, args.content);
     }
+    signal.throwIfAborted();
+    const bytesWritten = Buffer.byteLength(args.content, 'utf8');
+    return {
+      output: `${mode === 'append' ? 'Appended' : 'Wrote'} ${String(bytesWritten)} bytes to ${args.path}`,
+    };
   }
 
-  private async ensureParentDirectory(safePath: string): Promise<string | undefined> {
+  private writeError(path: string, error: unknown): ExecutableToolResult {
+    const code = (unwrapErrorCause(error) as { code?: unknown } | null)?.code;
+    if (code === 'ENOENT') {
+      return {
+        isError: true,
+        output: `Failed to write ${path}: parent directory does not exist.`,
+      };
+    }
+    return {
+      isError: true,
+      output: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  private async ensureParentDirectory(
+    safePath: string,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    signal.throwIfAborted();
     const parent = dirname(safePath);
     let stat: HostFileStat;
     try {
       stat = await this.fs.stat(parent);
+      signal.throwIfAborted();
     } catch (error) {
+      signal.throwIfAborted();
       if ((unwrapErrorCause(error) as { code?: unknown } | null)?.code === 'ENOENT') {
         try {
           await this.fs.mkdir(parent, { recursive: true });
+          signal.throwIfAborted();
           return undefined;
         } catch (mkdirError) {
+          signal.throwIfAborted();
           return mkdirError instanceof Error ? mkdirError.message : String(mkdirError);
         }
       }

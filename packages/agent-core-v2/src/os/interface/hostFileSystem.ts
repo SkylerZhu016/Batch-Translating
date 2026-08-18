@@ -27,15 +27,20 @@ export interface HostDirEntry {
   readonly isSymbolicLink?: boolean;
 }
 
+export interface HostFileWriteOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface IHostFileSystem {
   readonly _serviceBrand: undefined;
+  readonly supportsAbortableWrites?: boolean;
 
   readText(
     path: string,
     options?: { encoding?: BufferEncoding; errors?: TextDecodeErrors },
   ): Promise<string>;
-  writeText(path: string, data: string): Promise<void>;
-  appendText(path: string, data: string): Promise<void>;
+  writeText(path: string, data: string, options?: HostFileWriteOptions): Promise<void>;
+  appendText(path: string, data: string, options?: HostFileWriteOptions): Promise<void>;
   readBytes(path: string, n?: number): Promise<Uint8Array>;
   writeBytes(path: string, data: Uint8Array): Promise<void>;
   readLines(

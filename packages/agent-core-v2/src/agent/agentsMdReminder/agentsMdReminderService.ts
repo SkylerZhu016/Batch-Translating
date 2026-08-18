@@ -65,6 +65,7 @@ import { basename, dirname, isAbsolute, join, normalize } from 'pathe';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/_base/state/stateRegistry';
+import { timeoutOutcome } from '#/_base/utils/promise';
 import { IBashParserService } from '#/app/bashParser/bashParser';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
@@ -96,6 +97,7 @@ import { extractBashTargetDirs } from './bashTargets';
 const AGENTS_MD_BASENAMES: ReadonlySet<string> = new Set<string>(AGENTS_MD_PLAIN_NAMES);
 
 const BASH_PARSE_OPTIONS = { timeoutMs: 20, maxNodes: 10_000 } as const;
+const AGENTS_MD_REMINDER_TIMEOUT_MS = 2_000;
 
 export const agentsMdReminderKnownKey = defineState<Set<string>>(
   'agentsMdReminder.known',
@@ -169,47 +171,77 @@ export class AgentAgentsMdReminderService
     return this.states.get(agentsMdReminderCwdKey) ?? this.sessionContext.cwd;
   }
 
-  private async ensureSeeded(): Promise<void> {
+  private async ensureSeeded(isActive: () => boolean): Promise<void> {
     if (this.states.get(agentsMdReminderSeededKey)) return;
     const { paths } = await loadAgentsMdDetailed(
       { fs: this.fs, homeDir: this.env.homeDir },
       this.agentCwd,
       this.bootstrap.homeDir,
     );
+    if (!isActive()) return;
     this.seedInjected(paths, this.agentCwd);
   }
 
   private async augmentWithReminder(ctx: ToolDidExecuteContext): Promise<ExecutableToolResult> {
-    if (ctx.outcome !== 'executed') return ctx.result;
+    if (ctx.outcome !== 'executed' || ctx.signal.aborted) return ctx.result;
     const discovered: string[] = [];
-    try {
-      await this.ensureSeeded();
-      const { dirs, selfKnown } = this.targetDirs(ctx);
-      const selfKnownSet = new Set(selfKnown);
-      for (const dir of dirs) {
-        for (const path of await this.probeDir(dir)) {
-          if (this.known.has(path) || this.claimed.has(path) || selfKnownSet.has(path)) continue;
-          this.claimed.add(path);
-          discovered.push(path);
+    let active = true;
+    let resolveAbort: ((result: ExecutableToolResult) => void) | undefined;
+    const abort = new Promise<ExecutableToolResult>((resolve) => {
+      resolveAbort = resolve;
+    });
+    const onAbort = (): void => {
+      active = false;
+      for (const path of discovered) this.claimed.delete(path);
+      resolveAbort?.(ctx.result);
+    };
+    ctx.signal.addEventListener('abort', onAbort, { once: true });
+    if (ctx.signal.aborted) onAbort();
+    const probe = (async (): Promise<ExecutableToolResult> => {
+      try {
+        await this.ensureSeeded(() => active);
+        if (!active) return ctx.result;
+        const { dirs, selfKnown } = this.targetDirs(ctx);
+        const selfKnownSet = new Set(selfKnown);
+        for (const dir of dirs) {
+          const paths = await this.probeDir(dir);
+          if (!active) return ctx.result;
+          for (const path of paths) {
+            if (this.known.has(path) || this.claimed.has(path) || selfKnownSet.has(path)) continue;
+            this.claimed.add(path);
+            discovered.push(path);
+          }
+        }
+        if (!active) return ctx.result;
+        if (discovered.length === 0) {
+          this.publishKnown(selfKnown);
+          return ctx.result;
+        }
+        const result = prependReminder(ctx.result, reminderText(discovered));
+        const properties: AgentsMdReminderShownEvent = {
+          turn_id: ctx.turnId,
+          tool_name: ctx.toolCall.name,
+          reminded_count: discovered.length,
+          trace_id: ctx.trace?.traceId,
+        };
+        this.telemetry.track2('agents_md_reminder_shown', properties);
+        this.publishKnown([...selfKnown, ...discovered]);
+        return result;
+      } catch {
+        return ctx.result;
+      } finally {
+        if (active) {
+          for (const path of discovered) this.claimed.delete(path);
         }
       }
-      if (discovered.length === 0) {
-        this.publishKnown(selfKnown);
-        return ctx.result;
-      }
-      const result = prependReminder(ctx.result, reminderText(discovered));
-      const properties: AgentsMdReminderShownEvent = {
-        turn_id: ctx.turnId,
-        tool_name: ctx.toolCall.name,
-        reminded_count: discovered.length,
-        trace_id: ctx.trace?.traceId,
-      };
-      this.telemetry.track2('agents_md_reminder_shown', properties);
-      this.publishKnown([...selfKnown, ...discovered]);
-      return result;
-    } catch {
-      return ctx.result;
+    })();
+    const timeout = timeoutOutcome(AGENTS_MD_REMINDER_TIMEOUT_MS, ctx.result);
+    try {
+      return await Promise.race([probe, timeout, abort]);
     } finally {
+      active = false;
+      timeout.clear();
+      ctx.signal.removeEventListener('abort', onAbort);
       for (const path of discovered) this.claimed.delete(path);
     }
   }

@@ -6,7 +6,6 @@
  */
 
 import {
-  appendFile,
   lstat,
   open,
   readFile,
@@ -21,7 +20,12 @@ import {
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/decodeText';
 
-import { type HostDirEntry, type HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
+import {
+  type HostDirEntry,
+  type HostFileStat,
+  type HostFileWriteOptions,
+  IHostFileSystem,
+} from '#/os/interface/hostFileSystem';
 import { toHostFsError } from '#/os/interface/hostFsErrors';
 
 const READ_CHUNK_SIZE = 64 * 1024;
@@ -46,6 +50,7 @@ function* splitLinesKeepingTerminator(text: string): Generator<string> {
 
 export class HostFileSystem implements IHostFileSystem {
   declare readonly _serviceBrand: undefined;
+  readonly supportsAbortableWrites = true;
 
   async readText(
     path: string,
@@ -63,17 +68,23 @@ export class HostFileSystem implements IHostFileSystem {
     }
   }
 
-  async writeText(path: string, data: string): Promise<void> {
+  async writeText(path: string, data: string, options?: HostFileWriteOptions): Promise<void> {
     try {
-      await writeFile(path, data, 'utf8');
+      const writeOptions = options?.signal === undefined
+        ? { encoding: 'utf8' as const }
+        : { encoding: 'utf8' as const, signal: options.signal };
+      await writeFile(path, data, writeOptions);
     } catch (error) {
       throw toHostFsError(error, { path, op: 'write' });
     }
   }
 
-  async appendText(path: string, data: string): Promise<void> {
+  async appendText(path: string, data: string, options?: HostFileWriteOptions): Promise<void> {
     try {
-      await appendFile(path, data, 'utf8');
+      const writeOptions = options?.signal === undefined
+        ? { encoding: 'utf8' as const, flag: 'a' as const }
+        : { encoding: 'utf8' as const, flag: 'a' as const, signal: options.signal };
+      await writeFile(path, data, writeOptions);
     } catch (error) {
       throw toHostFsError(error, { path, op: 'append' });
     }
