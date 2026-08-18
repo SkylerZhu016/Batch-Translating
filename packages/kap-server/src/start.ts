@@ -427,6 +427,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core,
     logger,
     transcriptService,
+    onAgentUsage: (usage) => translationRuntime.recordAgentUsage(usage),
   });
   const fsWatchBridge = new FsWatchBridge({ core, logger });
 

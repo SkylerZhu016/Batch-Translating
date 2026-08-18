@@ -144,6 +144,24 @@ export interface RebuildRagInput extends Required<RagProjectReference> {
   readonly force?: boolean;
 }
 
+/** Exact, non-cumulative usage emitted after one successful agent model request. */
+export interface TranslationAgentUsageIncrement {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly sessionCustom?: Readonly<Record<string, unknown>>;
+  readonly sourceType: 'turn';
+  readonly turnId: number;
+  readonly step: number;
+  readonly modelId: string;
+  readonly providerId: string;
+  readonly usage: {
+    readonly inputOther: number;
+    readonly output: number;
+    readonly inputCacheRead: number;
+    readonly inputCacheCreation: number;
+  };
+}
+
 /**
  * Process-owned production boundary for translation state. Project bytes and
  * SQLite ledgers live under each caller-selected absolute project root. Only
@@ -340,6 +358,81 @@ export class TranslationRuntime {
       quality: this.qualityStatus(),
       warnings,
     };
+  }
+
+  async recordAgentUsage(input: TranslationAgentUsageIncrement): Promise<void> {
+    const binding = translationUsageBinding(input.sessionCustom);
+    if (binding === undefined) return;
+    this.assertOpen();
+
+    const sessionId = usageIdentity(input.sessionId, 'session id');
+    const agentId = usageIdentity(input.agentId, 'agent id');
+    const modelId = usageIdentity(input.modelId, 'model id');
+    const providerId = usageIdentity(input.providerId, 'provider id');
+    if (input.sourceType !== 'turn') {
+      throw new TranslationRuntimeError('invalid', 'Only turn-scoped usage can be recorded');
+    }
+    const turnId = usageInteger(input.turnId, 'turn id');
+    const step = usageInteger(input.step, 'turn step');
+    const inputOther = usageInteger(input.usage.inputOther, 'input token count');
+    const output = usageInteger(input.usage.output, 'output token count');
+    const inputCacheRead = usageInteger(input.usage.inputCacheRead, 'cache-read token count');
+    const inputCacheCreation = usageInteger(
+      input.usage.inputCacheCreation,
+      'cache-creation token count',
+    );
+    const inputTokens = inputOther + inputCacheRead + inputCacheCreation;
+    if (!Number.isSafeInteger(inputTokens)) {
+      throw new TranslationRuntimeError('invalid', 'Combined input token count is not a safe integer');
+    }
+
+    // `onDidRecord` is a per-finish increment, never the cumulative status
+    // snapshot. Including its exact four counters makes an identical replay
+    // idempotent while keeping a contradictory observation visibly distinct.
+    const eventId = hashCanonicalJson({
+      schema_version: 1,
+      source_type: input.sourceType,
+      session_id: sessionId,
+      agent_id: agentId,
+      turn_id: turnId,
+      step,
+      model_id: modelId,
+      provider_id: providerId,
+      usage: {
+        input_other: inputOther,
+        output,
+        input_cache_read: inputCacheRead,
+        input_cache_creation: inputCacheCreation,
+      },
+    });
+
+    await this.withProjectLock(binding.projectRoot, async () => {
+      const handle = await this.openHandle(binding);
+      handle.ledger.recordSyntheticUsageEvent({
+        projectId: binding.projectId,
+        eventId,
+        sessionId,
+        agentId,
+        turnId: String(turnId),
+        step,
+        modelId,
+        providerId,
+        inputTokens,
+        outputTokens: output,
+        cachedTokens: inputCacheRead,
+        priceSnapshot: {
+          availability: 'unavailable',
+          reason: 'kap_runtime_has_no_authoritative_price_catalog',
+          actual_cost_micros_is_placeholder: true,
+          provider_id: providerId,
+          model_id: modelId,
+        },
+        // Required ledger storage placeholder. The snapshot above explicitly
+        // prevents reports or budget UI from presenting this as a true zero.
+        actualCostMicros: 0,
+        stage: agentId === 'main' ? 'coordinator' : 'translation-subagent',
+      });
+    });
   }
 
   async applyInstruction(input: ApplyProjectInstructionInput): Promise<AppliedProjectInstruction> {
@@ -1707,6 +1800,43 @@ function requiredString(value: Record<string, unknown>, name: string): string {
     throw new TranslationRuntimeError('invalid', `${name} must be a non-empty string`);
   }
   return field;
+}
+
+function translationUsageBinding(
+  custom: Readonly<Record<string, unknown>> | undefined,
+): ProjectReference | undefined {
+  if (custom === undefined || custom['batchTranslation'] === undefined) return undefined;
+  const project = custom['batchTranslation'];
+  if (!isRecord(project)) {
+    throw new TranslationRuntimeError('invalid', 'batchTranslation session metadata is invalid');
+  }
+  const projectId = project['projectId'];
+  const paths = project['paths'];
+  const projectRoot = isRecord(paths) ? paths['projectRoot'] : undefined;
+  if (typeof projectId !== 'string' || !SAFE_PROJECT_ID.test(projectId)) {
+    throw new TranslationRuntimeError('invalid', 'batchTranslation.projectId is invalid');
+  }
+  if (typeof projectRoot !== 'string' || !projectRoot.trim() || !isAbsolute(projectRoot)) {
+    throw new TranslationRuntimeError(
+      'invalid',
+      'batchTranslation.paths.projectRoot must be an absolute path',
+    );
+  }
+  return { projectId, projectRoot: normalizeProjectRoot(projectRoot) };
+}
+
+function usageIdentity(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 512) {
+    throw new TranslationRuntimeError('invalid', `Agent usage ${label} is invalid`);
+  }
+  return value;
+}
+
+function usageInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new TranslationRuntimeError('invalid', `Agent usage ${label} is invalid`);
+  }
+  return value as number;
 }
 
 function normalizeProjectRoot(value: string): string {

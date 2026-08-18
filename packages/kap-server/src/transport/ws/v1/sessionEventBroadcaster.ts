@@ -65,10 +65,13 @@ import type {
 } from '@moonshot-ai/agent-core-v2';
 import {
   IAgentLifecycleService,
+  IAgentUsageService,
   IEventBus,
   IEventService,
+  IModelCatalog,
   ISessionActivityView,
   ISessionInteractionService,
+  ISessionMetadata,
   ISessionIndex,
   MAIN_AGENT_ID,
   getLiveSessionById,
@@ -142,6 +145,24 @@ export interface BroadcastTarget {
  * agent ids; global events ({@link isGlobalEvent}) bypass the filter entirely.
  */
 export type AgentFilter = ReadonlySet<string> | undefined;
+
+/** One completed model request's non-cumulative usage, before project binding. */
+export interface AgentUsageIncrement {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly sessionCustom?: Readonly<Record<string, unknown>>;
+  readonly sourceType: 'turn';
+  readonly turnId: number;
+  readonly step: number;
+  readonly modelId: string;
+  readonly providerId: string;
+  readonly usage: {
+    readonly inputOther: number;
+    readonly output: number;
+    readonly inputCacheRead: number;
+    readonly inputCacheCreation: number;
+  };
+}
 
 /**
  * What one connection wants from a session: two independent dimensions. The
@@ -236,6 +257,7 @@ export class SessionEventBroadcaster {
   private readonly pendingStates = new Map<string, Promise<SessionState | undefined>>();
   private readonly maxBufferSize: number;
   private readonly coreEventSubscription: IDisposable;
+  private readonly pendingUsage = new Set<Promise<void>>();
   private closed = false;
 
   constructor(
@@ -250,6 +272,8 @@ export class SessionEventBroadcaster {
        * transcript disabled (tests / minimal embeds).
        */
       readonly transcriptService?: TranscriptService;
+      /** Optional production sink for exact per-request agent usage increments. */
+      readonly onAgentUsage?: (usage: AgentUsageIncrement) => void | Promise<void>;
     },
   ) {
     this.maxBufferSize = opts.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
@@ -738,6 +762,7 @@ export class SessionEventBroadcaster {
       this.opts.transcriptService?.dropSession(sessionId);
     }
     this.sessions.clear();
+    await Promise.allSettled([...this.pendingUsage]);
   }
 
   private ensureState(sessionId: string): Promise<SessionState | undefined> {
@@ -977,7 +1002,7 @@ export class SessionEventBroadcaster {
     const agents = session.accessor.get(IAgentLifecycleService);
     const subscribeAgent = (handle: IAgentScopeHandle): void => {
       if (state.agentDisposables.has(handle.id)) return;
-      state.agentDisposables.set(handle.id, this.attachAgent(sessionId, handle));
+      state.agentDisposables.set(handle.id, this.attachAgent(sessionId, session, handle));
     };
     for (const handle of agents.list()) subscribeAgent(handle);
     state.lifecycleDisposables.push(
@@ -1007,8 +1032,15 @@ export class SessionEventBroadcaster {
     );
   }
 
-  private attachAgent(sessionId: string, handle: IAgentScopeHandle): IDisposable {
+  private attachAgent(
+    sessionId: string,
+    session: ISessionScopeHandle,
+    handle: IAgentScopeHandle,
+  ): IDisposable {
     const eventBus = handle.accessor.get(IEventBus);
+    const usageService = handle.accessor.get(IAgentUsageService);
+    const modelCatalog = handle.accessor.get(IModelCatalog);
+    const sessionMetadata = session.accessor.get(ISessionMetadata);
     let lastLegacyStatus: string | undefined;
     const emitLegacyStatus = (): void => {
       const snapshot = readLegacyStatus(handle);
@@ -1041,6 +1073,62 @@ export class SessionEventBroadcaster {
           emitLegacyStatus();
         }
         this.onAgentEvent(sessionId, handle.id, projected);
+      }),
+      usageService.onDidRecord((context) => {
+        const source = context.source;
+        if (this.opts.onAgentUsage === undefined || source?.type !== 'turn' || source.step === undefined) {
+          // Operation requests have no stable per-request ordinal. Missing one
+          // is safer than attributing it twice or to the wrong translation.
+          return;
+        }
+
+        let modelId: string;
+        let providerId: string;
+        try {
+          const model = modelCatalog.get(context.model);
+          modelId = model.id.trim();
+          providerId = model.providerName.trim();
+          if (!modelId || !providerId) throw new Error('resolved model identity is empty');
+        } catch (error) {
+          this.opts.logger?.warn(
+            { sessionId, agentId: handle.id, err: safeUsageError(error) },
+            'agent usage was not recorded because its runtime model identity was unavailable',
+          );
+          return;
+        }
+
+        // AgentUsageService fires this increment once after a successful model
+        // request finishes. A turn step is therefore the stable request ordinal;
+        // the ledger event id additionally includes this exact token tuple.
+        let pending!: Promise<void>;
+        pending = sessionMetadata.read()
+          .then((metadata) => this.opts.onAgentUsage?.({
+            sessionId,
+            agentId: handle.id,
+            sessionCustom: metadata.custom,
+            sourceType: 'turn',
+            turnId: source.turnId,
+            step: source.step!,
+            modelId,
+            providerId,
+            usage: {
+              inputOther: context.usage.inputOther,
+              output: context.usage.output,
+              inputCacheRead: context.usage.inputCacheRead,
+              inputCacheCreation: context.usage.inputCacheCreation,
+            },
+          }))
+          .then(() => undefined)
+          .catch((error: unknown) => {
+            this.opts.logger?.warn(
+              { sessionId, agentId: handle.id, err: safeUsageError(error) },
+              'agent usage could not be written to the bound translation ledger',
+            );
+          })
+          .finally(() => {
+            this.pendingUsage.delete(pending);
+          });
+        this.pendingUsage.add(pending);
       }),
     ];
 
@@ -1305,6 +1393,10 @@ const volatileSignalTypeSet: ReadonlySet<string> = new Set(VOLATILE_SIGNAL_TYPES
 
 function isVolatileSignal(type: string): boolean {
   return volatileSignalTypeSet.has(type);
+}
+
+function safeUsageError(error: unknown): string {
+  return error instanceof Error ? error.message.slice(0, 240) : 'unknown usage accounting error';
 }
 
 /**
