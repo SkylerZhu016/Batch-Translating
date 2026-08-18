@@ -4,7 +4,7 @@
      the model works through the stage. Built for users and debuggers to tell
      "model still thinking" from "model stuck". -->
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { nextTick, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppMessage, AppMessageContent } from '../../api/types';
 import Badge from '../ui/Badge.vue';
@@ -30,27 +30,33 @@ const emit = defineEmits<{
 
 const scrollRef = ref<HTMLElement | null>(null);
 
-/** Content fingerprint so BOTH new messages and in-place content updates
- *  (tool results / streaming deltas on existing messages) trigger a scroll. */
-const streamFingerprint = computed(() => {
-  const messages = props.messages;
-  let tail = 0;
-  const last = messages[messages.length - 1];
-  if (last) {
-    for (const block of last.content) {
-      if (block.type === 'text') tail += block.text.length;
-      else if (block.type === 'thinking') tail += block.thinking.length;
-      else if (block.type === 'toolResult') tail += 1;
-      else if (block.type === 'toolUse') tail += block.toolCallId.length;
-    }
-  }
-  return `${messages.length}:${tail}`;
-});
+/** Show the manual "jump to bottom" affordance once the user has scrolled up. */
+const showScrollToBottom = ref(false);
+const SCROLL_NEAR_BOTTOM_PX = 48;
 
-watch(streamFingerprint, async () => {
+function updateScrollToBottomState(): void {
+  const el = scrollRef.value;
+  if (!el) return;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_NEAR_BOTTOM_PX;
+  showScrollToBottom.value = !nearBottom;
+}
+
+function scrollConsoleToBottom(): void {
+  const el = scrollRef.value;
+  if (!el) return;
+  el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+}
+
+onMounted(async () => {
+  // The console is v-if mounted whenever the view is switched in.
+  // Reposition to the latest activity on every entrance. New messages never
+  // move the viewport while the user is reading.
   await nextTick();
   const el = scrollRef.value;
-  if (el) el.scrollTop = el.scrollHeight;
+  if (el) {
+    el.scrollTop = el.scrollHeight;
+    updateScrollToBottomState();
+  }
 });
 
 function formatTime(value: string): string {
@@ -139,7 +145,11 @@ watch(
       </div>
     </header>
 
-    <div ref="scrollRef" class="agent-console__stream">
+    <div
+      ref="scrollRef"
+      class="agent-console__stream"
+      @scroll.passive="updateScrollToBottomState"
+    >
       <p v-if="messages.length === 0" class="agent-console__empty">
         {{ t('translation.agentConsole.empty') }}
       </p>
@@ -204,6 +214,16 @@ watch(
       </article>
     </div>
 
+    <button
+      v-if="showScrollToBottom"
+      type="button"
+      class="agent-console__scroll-bottom"
+      aria-label="Scroll to bottom"
+      @click="scrollConsoleToBottom"
+    >
+      <Icon name="chevron-down" size="md" />
+    </button>
+
     <div class="agent-console__composer">
       <CorrectionComposer
         :model-value="commandValue"
@@ -221,6 +241,7 @@ watch(
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  position: relative;
   background: var(--color-bg);
 }
 .agent-console__header {
@@ -280,6 +301,30 @@ watch(
   padding: var(--space-3) var(--space-4) var(--space-4);
   border-top: 1px solid var(--color-line);
   background: var(--color-bg);
+}
+.agent-console__scroll-bottom {
+  position: absolute;
+  right: var(--space-4);
+  bottom: calc(var(--space-4) + var(--space-3) + 2rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  z-index: 2;
+}
+.agent-console__scroll-bottom:hover {
+  background: var(--color-surface-sunken);
+}
+.agent-console__scroll-bottom:active {
+  transform: translateY(1px);
 }
 .agent-console__empty {
   margin: auto;

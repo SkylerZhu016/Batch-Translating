@@ -49,7 +49,7 @@ import type {
   TranslationRuntimeStatus,
 } from '../types';
 import { createAgentProjector } from './agentEventProjector';
-import { DaemonHttpClient } from './http';
+import { DaemonHttpClient, TRANSLATION_RAG_TIMEOUT_MS } from './http';
 import {
   toAppApprovalRequest,
   toAppConfig,
@@ -1767,6 +1767,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
     const data = await this.http.post<WireTranslationRagStatus>(
       '/translation/rag/verify',
       body,
+      { timeoutMs: TRANSLATION_RAG_TIMEOUT_MS },
     );
     return toAppTranslationRagStatus(data);
   }
@@ -1784,6 +1785,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
     const data = await this.http.post<WireTranslationRagStatus>(
       '/translation/rag/rebuild',
       body,
+      { timeoutMs: TRANSLATION_RAG_TIMEOUT_MS },
     );
     return toAppTranslationRagStatus(data);
   }

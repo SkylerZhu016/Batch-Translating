@@ -6,6 +6,7 @@
  *   POST   /sessions                  create
  *   GET    /sessions                  list
  *   GET    /sessions/{session_id}     get
+ *   DELETE /sessions/{session_id}     delete
  *   GET    /sessions/{session_id}/profile
  *   POST   /sessions/{session_id}/profile      update title / metadata / agent_config
  *   POST   /sessions/{tail}                    action: fork / compact / undo /
@@ -116,6 +117,7 @@ import {
   compactSessionResponseSchema,
   createSessionChildRequestSchema,
   createSessionRequestSchema,
+  deleteSessionResponseSchema,
   forkSessionRequestSchema,
   getSessionGoalResponseSchema,
   listSessionChildrenResponseSchema,
@@ -148,6 +150,14 @@ interface SessionRouteHost {
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (
       req: { id: string; body: unknown; params: unknown; headers: Record<string, unknown> },
+      reply: { send(payload: unknown): unknown },
+    ) => Promise<void> | void,
+  ): unknown;
+  delete(
+    path: string,
+    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
+    handler: (
+      req: { id: string; params: unknown },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
@@ -852,6 +862,45 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
     sessionActionRoute.path,
     sessionActionRoute.options,
     sessionActionRoute.handler as Parameters<SessionRouteHost['post']>[2],
+  );
+
+  const deleteRoute = defineRoute(
+    {
+      method: 'DELETE',
+      path: '/sessions/{session_id}',
+      params: sessionIdParamSchema,
+      success: { data: deleteSessionResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
+        [ErrorCode.SESSION_NOT_FOUND]: {},
+      },
+      description: 'Delete a session (drains agents, removes its persisted directory)',
+      tags: ['sessions'],
+      operationId: 'deleteSession',
+    },
+    async (req, reply) => {
+      try {
+        const { session_id } = req.params;
+        // `handlerForSession` routes us to the owning workspace's lifecycle
+        // handler, mirroring archive/restore; `delete` closes any live session
+        // (draining agents) before removing its persisted directory and index
+        // entry, throwing `session.not_found` for unknown sessions.
+        const deleteHandler = await handlerForSession(core.accessor, session_id);
+        if (deleteHandler === undefined) {
+          throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+        }
+        await deleteHandler.accessor.get(ISessionLifecycleService).delete(session_id);
+        requestLog(req)?.info({ session_id, action: 'delete' }, 'session action completed');
+        reply.send(okEnvelope({ deleted: true }, req.id));
+      } catch (error) {
+        sendMappedError(reply, req, error);
+      }
+    },
+  );
+  app.delete(
+    deleteRoute.path,
+    deleteRoute.options,
+    deleteRoute.handler as Parameters<SessionRouteHost['delete']>[2],
   );
 
   const listChildrenRoute = defineRoute(

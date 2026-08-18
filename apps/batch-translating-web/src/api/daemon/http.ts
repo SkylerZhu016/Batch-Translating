@@ -13,6 +13,11 @@ import type { WireEnvelope } from './wire';
     streaming runs over the WS, not these REST calls. */
 const REQUEST_TIMEOUT_MS = 30_000;
 const EXPORT_TIMEOUT_MS = 5 * 60_000;
+/** RAG verify/rebuild can cold-start the local Python sidecar (importing Torch,
+    loading BGE-M3) and — for an unmanaged model — re-hash the whole weights
+    file. That comfortably exceeds the 30s default, so the synchronous RAG setup
+    calls get their own generous ceiling instead of aborting mid-startup. */
+export const TRANSLATION_RAG_TIMEOUT_MS = 5 * 60_000;
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const BODY_PREVIEW_LIMIT = 500;
 
@@ -175,8 +180,12 @@ export class DaemonHttpClient {
     });
   }
 
-  async post<T>(path: string, body?: unknown, opts?: { allowCodes?: number[] }): Promise<T> {
-    return this.request<T>('POST', path, body, undefined, opts?.allowCodes);
+  async post<T>(
+    path: string,
+    body?: unknown,
+    opts?: { allowCodes?: number[]; timeoutMs?: number },
+  ): Promise<T> {
+    return this.request<T>('POST', path, body, undefined, opts?.allowCodes ?? [], opts?.timeoutMs);
   }
 
   /** POST JSON and receive a raw ZIP. The request trace accepts a separate
@@ -428,9 +437,11 @@ export class DaemonHttpClient {
     body?: unknown,
     query?: Record<string, string | number | boolean | undefined>,
     allowCodes: number[] = [],
+    timeoutMs?: number,
   ): Promise<T> {
     // Build URL, appending query string (omit undefined values)
     let url = buildRestUrl(this.origin, path);
+    const effectiveTimeout = timeoutMs ?? REQUEST_TIMEOUT_MS;
     if (query) {
       const params = new URLSearchParams();
       for (const [key, value] of Object.entries(query)) {
@@ -462,7 +473,7 @@ export class DaemonHttpClient {
         method,
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: timeoutSignal(),
+        signal: timeoutSignal(effectiveTimeout),
       });
     } catch (err) {
       traceRestFailure({ method, path, requestId, phase: 'fetch', durationMs: Date.now() - startedAt, error: err });
@@ -474,7 +485,7 @@ export class DaemonHttpClient {
         url,
         requestId,
         phase: 'fetch',
-        timeoutMs: REQUEST_TIMEOUT_MS,
+        timeoutMs: effectiveTimeout,
         timestamp: Date.now(),
         durationMs: Date.now() - startedAt,
       });
@@ -495,7 +506,7 @@ export class DaemonHttpClient {
         url,
         requestId,
         phase: 'parse',
-        timeoutMs: REQUEST_TIMEOUT_MS,
+        timeoutMs: effectiveTimeout,
         status: response.status,
         statusText: response.statusText,
         contentType: response.headers.get('content-type') ?? undefined,

@@ -675,6 +675,28 @@ export class TranslationRuntime {
 
   async verifyBge(cpuFallback = true): Promise<BgeRuntimeStatus> {
     this.bgeState.cpuFallback = cpuFallback;
+    // Fast path: when a healthy sidecar for a known model is already running,
+    // verification only needs a live health check. Skipping re-discovery avoids
+    // re-hashing the whole BGE-M3 weights file, and skipping the restart avoids
+    // re-loading Torch and the model — a repeat verify returns in milliseconds
+    // instead of another ~60s cold start (which the web client's longer RAG
+    // timeout now tolerates on the genuinely cold first run).
+    if (
+      this.ragService !== undefined
+      && !this.ragService.isClosed
+      && this.bgeState.status === 'available'
+      && this.discoveredModel !== undefined
+    ) {
+      try {
+        const health = await this.ragService.client().health();
+        this.acceptRagHealth(health, this.discoveredModel);
+        if (this.bgeState.status === 'available') {
+          return this.publicBgeStatus(false, 0);
+        }
+      } catch {
+        // The live sidecar is unreachable — fall through to a fresh start.
+      }
+    }
     const discovered = await this.detectBge(true);
     if (discovered.status !== 'detected' || !this.discoveredModel) return discovered;
     await this.startRagForModel(this.discoveredModel);

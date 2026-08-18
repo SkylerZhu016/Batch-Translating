@@ -1,33 +1,39 @@
 # Batch Translating
 
-Batch Translating 是一个面向长篇 EPUB/TXT 文学翻译的 Windows 桌面工作台。它复用 Kimi Code 的 session、工具、任务和事件基础设施，并提供书籍导入、章节进度、翻译审校与产物导出界面。
+A Windows desktop workbench for long-form **EPUB/TXT literary translation**, built on top of the Kimi Code agent runtime. Translation is scheduled and steered by a single Coordinator agent; everything else — project state, retry/recovery, retrieval, quality gates, cost accounting and final EPUB rebuild — is backed by persistent, auditable infrastructure instead of prompt promises.
 
-当前仓库处于分阶段迁移期。已经存在的能力会按自动测试和真实 EPUB 验收结果逐项标记；尚未接通的 RAG、成本账本或恢复能力不会在本文中宣称可用。
+**Version 0.2.0** · Windows (NSIS installer) · Node 24.15.0 · pnpm 10.33.0
 
-## 当前可用范围
+> **Status: still in the debugging stage.** Some features may not work as expected yet. Ongoing maintenance is on the way — please wait for the next update.
+> **状态：仍在调试阶段。** 部分功能目前可能无法按预期运行，开发者后续会持续维护，敬请期待。
 
-- EPUB/TXT 只读导入与项目工作区；
-- 同一 Kimi Web session 中的对话、工具事件和翻译面板；
-- 已迁移的翻译项目界面，以及 EPUB/TXT 本地解析与导出工具；
-- Windows Tauri 桌面壳与本机 sidecar engine；
-- 脱敏诊断包导出；
-- 使用冻结依赖锁的 CI，以及 Windows 安装包、秘密与产物扫描工作流。
+```
+用户消息 ─▶ Kimi Web Session ─▶ Coordinator Agent ─▶ 翻译/记忆/审校 Agent Swarm
+                                              │
+                                              ▼
+                    SQLite/WAL 项目账本 · BGE-M3/Qdrant RAG · 确定性 EPUB 重建
+```
 
-源文件不会被原地覆盖。输出写入独立项目目录；运行模型由本机 Batch Translating 配置决定，应用不会静默切换 provider/model。
+## Highlights
 
-完整的 Coordinator 翻译、审校、修复、RAG、成本账本与断点恢复仍在后续阶段接通；当前版本不把这些迁移中的链路视为可用能力。
+- **Agent-native control plane** — the Coordinator drives the whole book through the same Kimi Code session, goal, prompt and tool/event path used for normal coding agents. User messages (including mid-run corrections) steer the Coordinator immediately and are persisted as versioned instruction events; Stop/Cancel/Pause/Resume/retry have distinct semantics.
+- **Durable project ledger** — SQLite/WAL keeps projects, immutable sources, paragraphs, a task DAG with claim/lease/attempt, idempotent content-addressed reruns, immutable artifacts, a single fencing-merger lease, and a fail-closed completion gate. A restarted or retried successful task never re-bills.
+- **Real retrieval (no mock RAG)** — a locally hosted Python service runs FlagEmbedding **BGE-M3** (dense + sparse + ColBERT/rerank) with a **Qdrant** vector store, per-project index isolation, canonical character/entity/timeline state, Story Memory, approved-only Translation Memory, spoiler-aware retrieval, and CPU fallback. BGE-M3 is optional; without it the pipeline degrades to a clearly more expensive two-chapter-context + double-review strategy.
+- **Full quality pipeline** — memory extraction/consolidation, translation, three review tracks (fidelity / naturalness / continuity), repair with hash-verified patches, conflict arbitration, and a consistency audit that must resolve all high/critical issues. The final book is rebuilt deterministically from the immutable source, structure-validated, and byte-receipted.
+- **Cost control** — soft/hard project budgets enforced in the ledger, per-request usage accounting keyed to the project, token/cache/price snapshots, and explicit `unavailable` pricing instead of fake zero cost.
+- **Desktop polish** — bilingual (中文/English) UI, one-click project creation with your own configured provider/model pinned per project (never silently switched), in-app diagnostics export, and a supervised engine/sidecar process tree under a Windows Job Object.
 
-## 开发
+## Getting started (development)
 
-要求：Node.js **必须为 24.15.0**、pnpm 10.33.0、Rust stable（构建桌面端时需要）。当前较新的 Node 24 版本在 Windows 上存在已确认的 libuv `fs.watch` 原生崩溃；仓库、CI 与 SEA 构建会统一拒绝错误版本。
+Requirements: **Node.js exactly 24.15.0** (newer 24.x releases hit a confirmed libuv `fs.watch` crash on Windows — the repo, CI and SEA build all reject wrong versions), pnpm 10.33.0, Rust stable (desktop only).
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm batch:dev:web
-corepack pnpm batch:dev:server
+corepack pnpm batch:dev:web      # web workbench (UI)
+corepack pnpm batch:dev:server   # local engine (API + agents)
 ```
 
-常用检查：
+Common checks:
 
 ```sh
 corepack pnpm batch:typecheck
@@ -36,12 +42,32 @@ corepack pnpm batch:style
 corepack pnpm batch:build
 ```
 
-Windows 桌面安装包由 `.github/workflows/batch-windows-build.yml` 构建。工作流使用锁文件中精确固定的 Tauri CLI，并且只有构建成功后才会产生名为 `batch-translating-windows-<commit-sha>` 的 artifact。该 artifact 只包含已内置 sidecar engine 的 NSIS 安装包；Tauri 的裸桌面可执行文件不能脱离 sidecar 单独使用，也不会被上传。本地验收构建放入仓库忽略的 `dist-desktop/`。
+## Building the Windows installer
 
-`.github/workflows/batch-release.yml` 只能手动触发，并且只接受 Windows build 与同一提交的完整 `batch-ci` 都已通过的构建记录。它不会由 push 或 tag 自动发布。
+The NSIS installer is produced by Tauri. Local acceptance builds go to the ignored `dist-desktop/` directory:
 
-## 上游与许可证
+```sh
+node scripts/ci/stage-rag-service.mjs   # stage whitelisted RAG Python sources (no models/venv/cache)
+corepack pnpm batch:desktop:build       # → Batch Translating_0.2.0_x64-setup.exe
+```
 
-产品分支以 Kimi Code `@moonshot-ai/kimi-code@0.33.0`（`53c832dfdf9566afd59a8b3d54ebd36d3cb03d72`）为可追溯祖先，保留上游包、许可证和贡献历史。Batch Translating 的翻译界面、EPUB/TXT 工具与桌面品牌作为产品层维护。
+CI performs the same build in `.github/workflows/batch-windows-build.yml` with a pinned Tauri CLI: content scanning (no models, venvs, caches, tokens, databases or tests in the package) before the NSIS artifact is produced, and no bare desktop exe is uploaded. A `signtool` warning on local machines does not affect SEA injection or startup.
 
-项目按 [MIT License](LICENSE) 发布。上游贡献者信息和各依赖许可证随源码及构建时生成的第三方许可证清单保留。
+`.github/workflows/batch-release.yml` is a manual, gated release flow — it never auto-fires on push/tag.
+
+## Repository layout
+
+| Path | Role |
+|---|---|
+| `apps/batch-translating-web` | Bilingual web workbench: project creation, BGE status/download, budgets, progress and diagnostics |
+| `apps/batch-translating-core` | Native engine (KAP server + translation CLI), bundled into the desktop sidecar |
+| `apps/batch-translating-desktop` | Tauri Windows shell, engine/sidecar supervision, RAG staging |
+| `packages/translation-domain` | Durable SQLite/WAL project ledger, idempotency, leases, cost events, completion gate |
+| `packages/translation-rag` | Python RAG service (BGE-M3 + Qdrant + canonical SQLite) and its TypeScript client |
+| `packages/translation-tools` | Deterministic EPUB/TXT parsing, unique merger, rebuild, validation and reports |
+| `packages/kap-server` | Authenticated REST/WebSocket API, translation/RAG routes, agent-core-v2 hosting |
+| `packages/agent-core-v2` | The DI×Scope agent engine hosting the Coordinator and translation agent profiles |
+
+## License
+
+MIT — see [LICENSE](LICENSE). The product branch keeps a traceable upstream ancestor at `@moonshot-ai/kimi-code@0.33.0`; upstream packages and notices remain with the source.
