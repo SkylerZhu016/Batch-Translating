@@ -30,7 +30,7 @@ import type { ContentPart } from '#/kosong/contract/message';
 import type { SessionWarning } from '#/app/sessionLegacy/sessionProtocol';
 
 import type { ExportSessionPayload, ExportSessionResult } from '#/app/sessionExport/sessionExport';
-
+import type { PluginCommandDef, PluginInfo, PluginSummary, ReloadSummary } from '#/app/plugin/types';
 import type { WithAgentId, WithSessionId } from './types';
 
 export type { ExportSessionManifest, ExportSessionPayload, ExportSessionResult, ShellEnvironment } from '#/app/sessionExport/sessionExport';
@@ -205,8 +205,53 @@ export interface ActivateSkillPayload {
   readonly args?: string | undefined;
 }
 
+export interface ActivatePluginCommandPayload {
+  readonly pluginId: string;
+  readonly commandName: string;
+  readonly args?: string | undefined;
+}
 
+export interface McpServerInfo {
+  readonly name: string;
+  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly status: 'pending' | 'connected' | 'failed' | 'disabled' | 'needs-auth';
+  readonly toolCount: number;
+  readonly error?: string;
+}
 
+export interface McpStartupMetrics {
+  readonly durationMs: number;
+}
+
+export interface ReconnectMcpServerPayload {
+  readonly name: string;
+}
+
+export interface InstallPluginPayload {
+  readonly source: string;
+}
+
+export interface SetPluginEnabledPayload {
+  readonly id: string;
+  readonly enabled: boolean;
+}
+
+export interface SetPluginMcpServerEnabledPayload {
+  readonly id: string;
+  readonly server: string;
+  readonly enabled: boolean;
+}
+
+export interface RemovePluginPayload {
+  readonly id: string;
+}
+
+export interface GetPluginInfoPayload {
+  readonly id: string;
+}
+
+export type ReloadPluginsResult = ReloadSummary;
+export type { PluginSummary, PluginInfo };
 
 export interface RenameSessionPayload {
   readonly title: string;
@@ -257,7 +302,7 @@ export interface AgentAPI {
   setPermission: (payload: SetPermissionPayload) => void;
   cancelCompaction: (payload: EmptyPayload) => void;
   activateSkill: (payload: ActivateSkillPayload) => PromptLaunchResult | undefined;
-
+  activatePluginCommand: (payload: ActivatePluginCommandPayload) => void;
   getContext: (payload: EmptyPayload) => AgentContextData;
   getTools: (payload: EmptyPayload) => readonly ToolInfo[];
 }
@@ -269,7 +314,10 @@ export interface SessionAPI extends AgentAPIWithId {
   updateSessionMetadata: (payload: UpdateSessionMetadataPayload) => void;
   getSessionMetadata: (payload: EmptyPayload) => SessionMeta;
   listSkills: (payload: EmptyPayload) => readonly SkillSummary[];
-
+  listPluginCommands: (payload: EmptyPayload) => readonly PluginCommandDef[];
+  listMcpServers: (payload: EmptyPayload) => readonly McpServerInfo[];
+  getMcpStartupMetrics: (payload: EmptyPayload) => McpStartupMetrics;
+  reconnectMcpServer: (payload: ReconnectMcpServerPayload) => void;
   generateAgentsMd: (payload: EmptyPayload) => void;
   getSessionWarnings: (payload: EmptyPayload) => readonly SessionWarning[];
 }
@@ -291,5 +339,11 @@ export interface CoreAPI extends SessionAPIWithId {
   forkSession: (payload: ForkSessionPayload) => ResumeSessionResult;
   listSessions: (payload: ListSessionsPayload) => readonly SessionSummary[];
   exportSession: (payload: ExportSessionPayload) => ExportSessionResult;
-
+  listPlugins: (payload: EmptyPayload) => readonly PluginSummary[];
+  installPlugin: (payload: InstallPluginPayload) => PluginSummary;
+  setPluginEnabled: (payload: SetPluginEnabledPayload) => void;
+  setPluginMcpServerEnabled: (payload: SetPluginMcpServerEnabledPayload) => void;
+  removePlugin: (payload: RemovePluginPayload) => void;
+  reloadPlugins: (payload: EmptyPayload) => ReloadPluginsResult;
+  getPluginInfo: (payload: GetPluginInfoPayload) => PluginInfo;
 }

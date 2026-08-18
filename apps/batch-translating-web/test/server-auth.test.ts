@@ -257,8 +257,7 @@ describe('credential persistence', () => {
 });
 
 describe('fragment token intake', () => {
-  function installWindow(hash: string) {
-    const replaceState = vi.fn();
+  function installWindow(hash: string, replaceState = vi.fn()) {
     const win = {
       location: {
         hash,
@@ -280,6 +279,46 @@ describe('fragment token intake', () => {
     expect(readStoredCredential()?.credential).toBe('frag-tok');
     // Fragment scrubbed: path + query kept, token gone.
     expect(replaceState).toHaveBeenCalledWith(null, '', '/some/path?x=1');
+  });
+
+  it('keeps a fragment token in memory when history scrubbing throws SecurityError', async () => {
+    localStore.setItem = () => {
+      throw new Error('storage unavailable');
+    };
+    const securityError = new Error('The operation is insecure.');
+    securityError.name = 'SecurityError';
+    const replaceState = vi.fn(() => {
+      throw securityError;
+    });
+    installWindow('#token=frag-security', replaceState);
+    const auth = await loadAuth();
+
+    expect(auth.initServerAuth()).toBe(true);
+    expect(auth.getCredential()).toBe('frag-security');
+    expect(replaceState).toHaveBeenCalledTimes(1);
+
+    // A failed history scrub must not discard the memory-only credential.
+    window.location.hash = '';
+    expect(auth.getCredential()).toBe('frag-security');
+  });
+
+  it('keeps a memory-only fragment credential across repeated initialization', async () => {
+    localStore.setItem = () => {
+      throw new Error('storage unavailable');
+    };
+    const { replaceState } = installWindow('#token=frag-memory');
+    const auth = await loadAuth();
+
+    expect(auth.initServerAuth()).toBe(true);
+    expect(auth.getCredential()).toBe('frag-memory');
+
+    // Model the URL after replaceState scrubbed the fragment. Before
+    // initialization became idempotent, this second call loaded empty storage
+    // and accidentally cleared the usable in-memory credential.
+    window.location.hash = '';
+    expect(auth.initServerAuth()).toBe(true);
+    expect(auth.getCredential()).toBe('frag-memory');
+    expect(replaceState).toHaveBeenCalledTimes(1);
   });
 
   it('ignores an empty fragment and falls back to storage', async () => {

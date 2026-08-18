@@ -103,9 +103,19 @@ async function main(): Promise<void> {
     console.log('[ok] config.getAll');
 
     assert(Array.isArray(await klient.global.flags.list()), 'flags.list returns an array');
+    assert(Array.isArray(await klient.global.plugins.list()), 'plugins.list returns an array');
     const auth = await klient.global.auth.status();
     assert(typeof auth.loggedIn === 'boolean', 'auth.status returns a status');
-    console.log('[ok] flags / auth');
+    console.log('[ok] flags / plugins / auth');
+
+    let rpcError: { name: string; code?: number } | undefined;
+    try {
+      await klient.global.plugins.info('__definitely_missing__');
+    } catch (error) {
+      rpcError = error as { name: string; code?: number };
+    }
+    assert(rpcError !== undefined, 'missing plugin surfaces an error');
+    console.log('[ok] error path ->', rpcError.name, rpcError.code);
 
     await klient.close();
     console.log('smoke: OK');

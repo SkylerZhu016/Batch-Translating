@@ -42,20 +42,32 @@ export type {
   KimiConfig,
   KimiConfigPatch,
   LoopControl,
+  McpServerInfo,
+  McpStartupMetrics,
   ModelAlias,
   MoonshotServiceConfig,
   OAuthRef,
+  PluginCommandDef,
+  PluginGithubMetadata,
+  PluginGithubRef,
+  PluginInfo,
+  PluginMcpServerInfo,
+  PluginSource,
+  PluginSummary,
   ProcessBackgroundTaskInfo,
   PromptOrigin,
   ProviderConfig,
   ProviderType,
   QuestionBackgroundTaskInfo,
+  ReloadSummary,
   ResumedAgentState,
   ServicesConfig,
   ShellEnvironment,
   SkillSummary,
   ThinkingConfig,
   ToolInfo,
+  GlobalMcpServerConfig as McpServerConfig,
+  GlobalMcpServerTestResult as McpTestResult,
 } from '@moonshot-ai/agent-core';
 
 export type { KimiHostIdentity, OAuthRefreshOutcome };
@@ -67,10 +79,12 @@ export type PermissionMode = 'yolo' | 'manual' | 'auto';
 /**
  * Trust state of a workspace directory. Only meaningful on the agent-core-v2
  * engine; the v1 engine has no workspace-trust concept and reports
- * `{ trusted: true }`.
+ * `{ trusted: true, gatedMcpServers: [] }`.
  */
 export interface WorkspaceTrustInfo {
   readonly trusted: boolean;
+  /** Names of project-level MCP servers that trusting the workspace would enable. */
+  readonly gatedMcpServers: readonly string[];
 }
 
 export interface CreateGoalInput {
@@ -150,7 +164,9 @@ export interface ResumeSessionInput {
   readonly sessionStartedProperties?: TelemetryProperties;
 }
 
-export interface ReloadSessionInput extends ResumeSessionInput {}
+export interface ReloadSessionInput extends ResumeSessionInput {
+  readonly forcePluginSessionStartReminder?: boolean;
+}
 
 export interface AddAdditionalDirInput {
   readonly id: string;
@@ -203,11 +219,25 @@ export interface GetConfigOptions {
   readonly reload?: boolean | undefined;
 }
 
+export interface AuthenticateMcpServerOptions {
+  readonly onAuthorizationUrl: (
+    url: string,
+  ) => void | boolean | PromiseLike<void | boolean>;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+}
+
+export interface TestMcpServerOptions {
+  readonly cwd?: string;
+}
+
 export interface CompactOptions {
   readonly instruction?: string | undefined;
 }
 
-export interface ReloadSessionOptions {}
+export interface ReloadSessionOptions {
+  readonly forcePluginSessionStartReminder?: boolean;
+}
 
 export interface PlanInfo {
   readonly id: string;

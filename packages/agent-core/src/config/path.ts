@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'pathe';
 
 export function resolveKimiHome(homeDir?: string | undefined): string {
-  return homeDir ?? process.env['BATCH_TRANSLATING_HOME'] ?? process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.batch-translating');
+  return homeDir ?? process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.kimi-code');
 }
 
 export function resolveConfigPath(input: {

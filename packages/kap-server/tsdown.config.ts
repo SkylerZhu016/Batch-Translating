@@ -3,7 +3,7 @@ import { defineConfig } from 'tsdown';
 import {
   BUILT_IN_CATALOG_DEFINE,
   builtInCatalogDefine,
-} from '../../apps/batch-translating-core/scripts/built-in-catalog.mjs';
+} from '../../apps/kimi-code/scripts/built-in-catalog.mjs';
 
 export default defineConfig({
   entry: ['./src/index.ts'],

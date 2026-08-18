@@ -101,7 +101,7 @@ describe('resolveKimiTokenStorageName', () => {
         oauthKey: 'oauth/kimi-code',
       }),
     ).toBe('kimi-code');
-    expect(() => resolveKimiTokenStorageName({ oauthKey: '../batch-translating-core' })).toThrow(/Invalid/);
+    expect(() => resolveKimiTokenStorageName({ oauthKey: '../kimi-code' })).toThrow(/Invalid/);
   });
 });
 

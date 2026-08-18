@@ -19,9 +19,14 @@ import type {
   GoalSnapshot,
   GoalToolResult,
   JsonObject,
+  McpServerInfo,
+  McpStartupMetrics,
   PermissionMode,
+  PluginInfo,
+  PluginSummary,
   PromptInput,
   ReloadSessionOptions,
+  ReloadSummary,
   ResumedSessionState,
   ResumedSessionSummary,
   SessionPlan,
@@ -29,6 +34,7 @@ import type {
   SessionSummary,
   SessionUsage,
   SkillSummary,
+  PluginCommandDef,
   ThinkingEffort,
   Unsubscribe,
 } from '#/types';
@@ -56,7 +62,7 @@ interface CapabilityRpcSurface {
   installCapability(id: string): Promise<CapabilityStatus>;
 }
 
-function capabilityRpc(rpc: SDKRpcClientBase): CapabilityRpcSurface {
+export function capabilityRpc(rpc: SDKRpcClientBase): CapabilityRpcSurface {
   const candidate = rpc as Partial<CapabilityRpcSurface>;
   if (
     typeof candidate.listCapabilities !== 'function' ||
@@ -94,7 +100,10 @@ export class Session {
 
   async reloadSession(options?: ReloadSessionOptions): Promise<ResumedSessionSummary> {
     this.ensureOpen();
-    const summary = await this.rpc.reloadSession({ sessionId: this.id });
+    const summary = await this.rpc.reloadSession({
+      sessionId: this.id,
+      forcePluginSessionStartReminder: options?.forcePluginSessionStartReminder,
+    });
     this.summary = summary;
     this.resumeState = resumeStateFromSummary(summary);
     return summary;
@@ -357,6 +366,11 @@ export class Session {
     return this.rpc.listSkills({ sessionId: this.id });
   }
 
+  async listPluginCommands(): Promise<readonly PluginCommandDef[]> {
+    this.ensureOpen();
+    return this.rpc.listPluginCommands({ sessionId: this.id });
+  }
+
   /**
    * List background tasks for this session's interactive agent.
    *
@@ -505,6 +519,36 @@ export class Session {
     return this.rpc.getCronTasks({ sessionId: this.id });
   }
 
+  async listMcpServers(): Promise<readonly McpServerInfo[]> {
+    this.ensureOpen();
+    return this.rpc.listMcpServers({ sessionId: this.id });
+  }
+
+  async getMcpStartupMetrics(): Promise<McpStartupMetrics> {
+    this.ensureOpen();
+    return this.rpc.getMcpStartupMetrics({ sessionId: this.id });
+  }
+
+  async reconnectMcpServer(name: string): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.reconnectMcpServer({ sessionId: this.id, name });
+  }
+
+  async listPlugins(): Promise<readonly PluginSummary[]> {
+    this.ensureOpen();
+    return this.rpc.listPlugins();
+  }
+
+  async installPlugin(source: string): Promise<PluginSummary> {
+    this.ensureOpen();
+    return this.rpc.installPlugin(source);
+  }
+
+  async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.setPluginEnabled(id, enabled);
+  }
+
   /** Built-in capabilities with layered readiness (v2 engine only). */
   async listCapabilities(): Promise<readonly CapabilityStatus[]> {
     this.ensureOpen();
@@ -526,6 +570,30 @@ export class Session {
     return capabilityRpc(this.rpc).installCapability(id);
   }
 
+  async setPluginMcpServerEnabled(
+    id: string,
+    server: string,
+    enabled: boolean,
+  ): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.setPluginMcpServerEnabled(id, server, enabled);
+  }
+
+  async removePlugin(id: string): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.removePlugin(id);
+  }
+
+  async reloadPlugins(): Promise<ReloadSummary> {
+    this.ensureOpen();
+    return this.rpc.reloadPlugins();
+  }
+
+  async getPluginInfo(id: string): Promise<PluginInfo> {
+    this.ensureOpen();
+    return this.rpc.getPluginInfo(id);
+  }
+
   async activateSkill(name: string, args?: string | undefined): Promise<void> {
     this.ensureOpen();
     const skillName = normalizeRequiredString(
@@ -538,6 +606,29 @@ export class Session {
       sessionId: this.id,
       name: skillName,
       ...(skillArgs !== undefined ? { args: skillArgs } : {}),
+    });
+  }
+
+  async activatePluginCommand(
+    pluginId: string,
+    commandName: string,
+    args?: string | undefined,
+  ): Promise<void> {
+    this.ensureOpen();
+    const normalizedPluginId = pluginId.trim();
+    const normalizedCommandName = commandName.trim();
+    if (normalizedPluginId.length === 0 || normalizedCommandName.length === 0) {
+      throw new KimiError(
+        ErrorCodes.REQUEST_INVALID,
+        'Plugin id and command name cannot be empty',
+      );
+    }
+    const commandArgs = normalizeOptionalString(args);
+    await this.rpc.activatePluginCommand({
+      sessionId: this.id,
+      pluginId: normalizedPluginId,
+      commandName: normalizedCommandName,
+      ...(commandArgs !== undefined ? { args: commandArgs } : {}),
     });
   }
 

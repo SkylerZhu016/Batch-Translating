@@ -28,6 +28,7 @@ import type {
 import type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
 
 import type { ScopeRef } from '../channel.js';
+import type { McpServerConfig } from '../../contract/mcp.js';
 import { RPCError } from '../errors.js';
 import type { ScopedCaller } from './global.js';
 
@@ -42,10 +43,13 @@ interface HandleWire {
 
 /**
  * Options for `SessionFacade.restore` — mirrors the engine's
- * `ResumeSessionOptions`.
+ * `ResumeSessionOptions`. `mcpServers` injects ephemeral per-session MCP
+ * servers when restore re-materializes a cold session (ignored when the
+ * session is already live).
  */
 export interface SessionRestoreOptions {
   readonly additionalDirs?: readonly string[];
+  readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
 }
 
 export interface SessionApprovalsFacade {

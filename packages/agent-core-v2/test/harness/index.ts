@@ -16,6 +16,7 @@ export {
   InMemoryWireRecordPersistence,
   llmGenerateServices,
   logServices,
+  mcpServices,
   modelProviderOptionServices,
   modelProviderServices,
   permissionModeServices,

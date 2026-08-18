@@ -4,11 +4,6 @@ dist-web/
 dist-single/
 dist-native/
 dist-desktop/
-apps/batch-translating-desktop/src-tauri/target/
-apps/batch-translating-desktop/src-tauri/binaries/
-apps/batch-translating-desktop/src-tauri/ui/
-apps/batch-translating-desktop/src-tauri/.cargo/
-apps/batch-translating-desktop/package-lock.json
 .tmp-api-extractor/
 .contract-types-tmp/
 .local/
@@ -26,14 +21,33 @@ plugins/cdn/
 .kimi-code/local.toml
 .kimi-sandbox/
 .vscode/
+!apps/vscode/.vscode/
+!apps/vscode/.vscode/*.json
 apps/vscode/artifacts/
+
+# Batch Translating desktop/build outputs and local verification fixtures.
+apps/batch-translating-desktop/src-tauri/target/
+apps/batch-translating-desktop/src-tauri/binaries/
+apps/batch-translating-desktop/src-tauri/gen/
+apps/batch-translating-desktop/src-tauri/ui/
+apps/batch-translating-desktop/src-tauri/.cargo/
+apps/batch-translating-desktop/package-lock.json
+apps/batch-translating-core/test/fixtures/
+apps/batch-translating-core/scripts/fixtures/
 
 Dockerfile
 docker-compose.yml
 .dockerignore
 
 docs/superpowers/
+docs/migration/
 reports/
+.browser-artifacts/
+browser-artifacts/
+test-results/
+playwright-report/
+third-party-licenses.json
+gitleaks-report.json
 .superpowers/
 /plan/
 

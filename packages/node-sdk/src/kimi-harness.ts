@@ -7,10 +7,12 @@ import {
   type ExperimentalFeatureState,
 } from '@moonshot-ai/agent-core';
 
-import { Session } from '#/session';
+import { capabilityRpc, Session } from '#/session';
 import type { KimiAuthFacade } from '#/auth';
 import type { SDKRpcClientBase } from '#/rpc';
 import type {
+  AuthenticateMcpServerOptions,
+  CapabilityStatus,
   ConfigDiagnostics,
   CreateSessionOptions,
   ExportSessionInput,
@@ -21,6 +23,13 @@ import type {
   KimiConfigPatch,
   KimiHostIdentity,
   ListSessionsOptions,
+  McpServerConfig,
+  McpServerInfo,
+  McpTestResult,
+  PluginCommandDef,
+  PluginInfo,
+  PluginSummary,
+  ReloadSummary,
   RenameSessionInput,
   ResumeSessionInput,
   ReloadSessionInput,
@@ -29,6 +38,7 @@ import type {
   TelemetryClient,
   TelemetryContextPatch,
   TelemetryProperties,
+  TestMcpServerOptions,
   WorkspaceTrustInfo,
 } from '#/types';
 
@@ -166,12 +176,17 @@ export class KimiHarness {
     const id = normalizeSessionId(input.id);
     const active = this.activeSessions.get(id);
     if (active !== undefined) {
-      await active.reloadSession();
+      await active.reloadSession({
+        forcePluginSessionStartReminder: input.forcePluginSessionStartReminder,
+      });
       this.trackSessionEvent(active.id, 'session_reload');
       return active;
     }
 
-    const summary = await this.rpc.reloadSession({ sessionId: id });
+    const summary = await this.rpc.reloadSession({
+      sessionId: id,
+      forcePluginSessionStartReminder: input.forcePluginSessionStartReminder,
+    });
     const session = new Session({
       id: summary.id,
       workDir: summary.workDir,
@@ -248,6 +263,75 @@ export class KimiHarness {
   }
 
   /**
+   * App-global plugin command list, no session required. Empty on the v1
+   * engine, which only exposes plugin commands through a live session.
+   */
+  async listPluginCommands(): Promise<readonly PluginCommandDef[]> {
+    return this.rpc.listPluginCommandsGlobal();
+  }
+
+  /**
+   * App-global plugin management, no session required. The v2 engine keeps
+   * plugin state app-global (these calls are routed through the klient
+   * `global.plugins` facade), so `/plugins` works before the first session
+   * exists; the v1 engine only exposes plugins through a live session.
+   */
+  async listPlugins(): Promise<readonly PluginSummary[]> {
+    return this.rpc.listPlugins();
+  }
+
+  /**
+   * Workspace-level MCP server list, no session required. The v2 engine owns
+   * one shared connection set per workspace handler, so `/mcp` is inspectable
+   * before the first session exists; empty on the v1 engine.
+   */
+  async listWorkspaceMcpServers(workDir: string): Promise<readonly McpServerInfo[]> {
+    return this.rpc.listWorkspaceMcpServers(workDir);
+  }
+
+  async installPlugin(source: string): Promise<PluginSummary> {
+    return this.rpc.installPlugin(source);
+  }
+
+  async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
+    return this.rpc.setPluginEnabled(id, enabled);
+  }
+
+  async setPluginMcpServerEnabled(id: string, server: string, enabled: boolean): Promise<void> {
+    return this.rpc.setPluginMcpServerEnabled(id, server, enabled);
+  }
+
+  async removePlugin(id: string): Promise<void> {
+    return this.rpc.removePlugin(id);
+  }
+
+  async reloadPlugins(): Promise<ReloadSummary> {
+    return this.rpc.reloadPlugins();
+  }
+
+  async getPluginInfo(id: string): Promise<PluginInfo> {
+    return this.rpc.getPluginInfo(id);
+  }
+
+  /**
+   * App-global capability readiness and setup (the built-in product
+   * capabilities kimi-cu / kimi-webbridge), no session required. Routed
+   * through the same global channel as session capability calls; requires
+   * the v2 engine and throws on v1, which has no capability surface.
+   */
+  async listCapabilities(): Promise<readonly CapabilityStatus[]> {
+    return capabilityRpc(this.rpc).listCapabilities();
+  }
+
+  async getCapability(id: string): Promise<CapabilityStatus> {
+    return capabilityRpc(this.rpc).getCapability(id);
+  }
+
+  async installCapability(id: string): Promise<CapabilityStatus> {
+    return capabilityRpc(this.rpc).installCapability(id);
+  }
+
+  /**
    * Trust state of `workDir` (agent-core-v2 only; the v1 engine reports an
    * always-trusted workspace). Querying may register the workDir as a
    * workspace, which session creation would do anyway.
@@ -256,7 +340,7 @@ export class KimiHarness {
     return this.rpc.getWorkspaceTrustInfo(workDir);
   }
 
-  /** Mark `workDir` as trusted. */
+  /** Mark `workDir` as trusted; project-level MCP servers connect live afterwards. */
   async trustWorkspace(workDir: string): Promise<void> {
     return this.rpc.trustWorkspace(workDir);
   }
@@ -302,6 +386,55 @@ export class KimiHarness {
    */
   async replaceConfigSections(sections: Record<string, unknown>): Promise<void> {
     return this.rpc.replaceConfigSections(sections);
+  }
+
+  /** User-global MCP entries from `<KIMI_CODE_HOME>/mcp.json` only. */
+  async listMcpServers(): Promise<readonly McpServerConfig[]> {
+    return this.rpc.listGlobalMcpServers();
+  }
+
+  async addMcpServer(server: McpServerConfig): Promise<readonly McpServerConfig[]> {
+    return this.rpc.addGlobalMcpServer(server);
+  }
+
+  async updateMcpServer(server: McpServerConfig): Promise<readonly McpServerConfig[]> {
+    return this.rpc.updateGlobalMcpServer(server);
+  }
+
+  async removeMcpServer(name: string): Promise<readonly McpServerConfig[]> {
+    return this.rpc.removeGlobalMcpServer(name);
+  }
+
+  async authenticateMcpServer(
+    name: string,
+    options: AuthenticateMcpServerOptions,
+  ): Promise<void> {
+    const started = await this.rpc.beginGlobalMcpServerAuth(name);
+    if (started.status === 'already-authorized') return;
+    try {
+      const opened = await options.onAuthorizationUrl(started.authorizationUrl);
+      if (opened === false) {
+        throw new KimiError(ErrorCodes.REQUEST_INVALID, 'MCP OAuth authorization was cancelled');
+      }
+      await this.rpc.completeGlobalMcpServerAuth(
+        { flowId: started.flowId, timeoutMs: options.timeoutMs },
+        options.signal,
+      );
+    } catch (error) {
+      await this.rpc.cancelGlobalMcpServerAuth(started.flowId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async resetMcpServerAuth(name: string): Promise<void> {
+    return this.rpc.resetGlobalMcpServerAuth(name);
+  }
+
+  async testMcpServer(
+    name: string,
+    options: TestMcpServerOptions = {},
+  ): Promise<McpTestResult> {
+    return this.rpc.testGlobalMcpServer(name, options);
   }
 
   async close(): Promise<void> {

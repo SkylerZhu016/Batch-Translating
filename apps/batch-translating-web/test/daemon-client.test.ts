@@ -2,7 +2,7 @@
 // DaemonKimiWebApi public REST adapter: session export binary/error contracts,
 // getSessionGoal wire → app mapping, and raw stream-coordinate delivery.
 // Wiring: real client/projector; fetch or WebSocket is stubbed at the network boundary.
-// Run: pnpm --filter @moonshot-ai/kimi-web exec vitest run test/daemon-client.test.ts
+// Run: pnpm --filter @batch-translating/web exec vitest run test/daemon-client.test.ts
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -102,6 +102,14 @@ function createApi(): DaemonKimiWebApi {
     clientVersion: '0.0.0',
     clientUiMode: 'test',
   });
+}
+
+function parseJsonRequestBody(init: RequestInit): unknown {
+  const { body } = init;
+  if (typeof body !== 'string') {
+    throw new TypeError(`Expected a JSON string request body, received ${typeof body}`);
+  }
+  return JSON.parse(body) as unknown;
 }
 
 describe('DaemonKimiWebApi.exportSession', () => {
@@ -256,7 +264,7 @@ describe('DaemonKimiWebApi translation session contracts', () => {
     });
 
     const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseJsonRequestBody(init)).toEqual({
       title: 'Book',
       metadata: {
         cwd: 'C:\\Books',
@@ -278,7 +286,7 @@ describe('DaemonKimiWebApi translation session contracts', () => {
     await createApi().deleteSession('sess/1');
 
     const update = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(update.body))).toEqual({
+    expect(parseJsonRequestBody(update)).toEqual({
       metadata: { batchTranslation: { stage: 'review' } },
     });
     expect(vi.mocked(fetch).mock.calls[1]?.[0]).toBe(
@@ -299,7 +307,7 @@ describe('DaemonKimiWebApi translation session contracts', () => {
     });
 
     const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toMatchObject({
+    expect(parseJsonRequestBody(init)).toMatchObject({
       profile: 'batch-translator',
       disabled_tools: ['Edit', 'Grep'],
     });
@@ -319,7 +327,7 @@ describe('DaemonKimiWebApi translation session contracts', () => {
     });
 
     const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseJsonRequestBody(init)).toEqual({
       tools: wireConfig.tools,
       identity: wireConfig.identity,
     });

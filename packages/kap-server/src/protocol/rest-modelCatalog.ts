@@ -57,9 +57,7 @@ export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
 
 export const createProviderModelSchema = z.object({
   model: z.string().min(1),
-  // Optional: when omitted the runtime falls back to the unknown-context
-  // budget instead of clamping request splitting to a guessed size.
-  max_context_size: z.number().int().min(1).optional(),
+  max_context_size: z.number().int().min(1),
   display_name: z.string().min(1).optional(),
   capabilities: z.array(z.string()).optional(),
   max_output_size: z.number().int().min(1).optional(),

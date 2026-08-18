@@ -12,7 +12,6 @@
 import { IConfigService, type Scope } from '@moonshot-ai/agent-core-v2';
 import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
 import type { KimiHostIdentity } from '@moonshot-ai/kimi-code-oauth';
-import { ulid } from 'ulid';
 
 import { okEnvelope } from '../envelope';
 import { type IConnectionRegistry } from '../transport/ws/connectionRegistry';
@@ -63,6 +62,9 @@ interface ApiV1RouteHost {
 
 export interface RegisterApiV1RoutesOptions {
   readonly serverVersion: string;
+  /** The same process identity persisted in the instance registry. */
+  readonly serverId: string;
+  readonly engineRuntime: () => { readonly origin: string; readonly port: number };
   /**
    * Host product identity from `startServer` — the session export route stamps
    * its manifest from `hostIdentity.version`.
@@ -101,7 +103,7 @@ export async function registerApiV1Routes(
 
       registerMetaRoute(apiV1, {
         serverVersion: opts.serverVersion,
-        serverId: ulid(),
+        serverId: opts.serverId,
         startedAt: new Date().toISOString(),
         dangerousBypassAuth: opts.dangerousBypassAuth === true,
         getExperimentalFlags: async () => {
@@ -129,7 +131,11 @@ export async function registerApiV1Routes(
       registerSessionExportRoute(
         apiV1 as unknown as Parameters<typeof registerSessionExportRoute>[0],
         core,
-        { hostIdentity: opts.hostIdentity },
+        {
+          hostIdentity: opts.hostIdentity,
+          serverId: opts.serverId,
+          engineRuntime: opts.engineRuntime,
+        },
       );
       registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], core);
       registerMessagesRoutes(

@@ -356,17 +356,6 @@ describe('KimiHarness config API', () => {
         enabled: false,
         source: 'default',
       },
-      {
-        id: 'acp-v2',
-        title: 'ACP server v2 (agent-core-v2 engine)',
-        description:
-          'Expose the `kimi acp-v2` sub-command that runs the Agent Client Protocol server over the experimental agent-core-v2 engine.',
-        surface: 'core',
-        env: 'KIMI_CODE_EXPERIMENTAL_ACP_V2',
-        defaultEnabled: false,
-        enabled: false,
-        source: 'default',
-      },
     ]);
   });
 
@@ -408,5 +397,24 @@ describe('KimiHarness config API', () => {
     expect(harness.getSession(session.id)).toBe(session);
     expect(session.getResumeState()?.agents['main']).toBeDefined();
     await expect(session.getStatus()).resolves.toMatchObject({ model: 'kimi-for-coding' });
+  });
+
+  it('forwards forcePluginSessionStartReminder to the active session reload', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = join(homeDir, 'work');
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, COMPLETE_TOML, 'utf-8');
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const session = await harness.createSession({
+      id: 'session-sdk-reload-forward',
+      workDir,
+      model: 'kimi-for-coding',
+    });
+
+    const reloadSpy = vi.spyOn(session, 'reloadSession').mockResolvedValue({} as never);
+
+    await harness.reloadSession({ id: session.id, forcePluginSessionStartReminder: true });
+
+    expect(reloadSpy).toHaveBeenCalledWith({ forcePluginSessionStartReminder: true });
   });
 });

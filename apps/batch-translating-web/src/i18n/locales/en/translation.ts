@@ -276,6 +276,8 @@ export default {
     },
     promptTitle: 'Translation prompts',
     promptHint: 'Detailed, versioned prompts cover EPUB containers, long chapters, ambiguity, terminology, retries, patches, checkpoints, and integrity checks.',
+    diagnosticsTitle: 'Redacted diagnostics',
+    diagnosticsHint: 'Export runtime identity, health status, and sanitized events for the current session. Book text, raw conversations, configuration files, and access keys are excluded.',
     configTitle: 'Configuration',
     configHint: 'Changes are validated before they are written to the same settings used by the configuration file.',
     saved: 'Settings saved',

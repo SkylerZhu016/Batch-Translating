@@ -17,9 +17,11 @@ import { FsErrors } from '#/workspace/workspaceFs/internal/errors';
 import { FullCompactionErrors } from '#/agent/fullCompaction/errors';
 import { GoalErrors } from '#/agent/goal/errors';
 import { LoopErrors } from '#/agent/loop/errors';
+import { McpErrors } from '#/mcpCore/errors';
 import { ModelCatalogErrors } from '#/kosong/model/errors';
 import { OsFsErrors } from '#/os/interface/hostFsErrors';
 import { OsProcessErrors } from '#/os/interface/hostProcess';
+import { PluginErrors } from '#/app/plugin/errors';
 import { ProfileErrors } from '#/agent/profile/errors';
 import { PromptErrors } from '#/agent/prompt/errors';
 import { ModelsDevImportErrors } from '#/app/kosongConfig/errors';
@@ -50,9 +52,11 @@ export { FsErrors } from '#/workspace/workspaceFs/internal/errors';
 export { FullCompactionErrors } from '#/agent/fullCompaction/errors';
 export { GoalErrors } from '#/agent/goal/errors';
 export { LoopErrors } from '#/agent/loop/errors';
+export { McpErrors } from '#/mcpCore/errors';
 export { ModelCatalogErrors } from '#/kosong/model/errors';
 export { OsFsErrors } from '#/os/interface/hostFsErrors';
 export { OsProcessErrors } from '#/os/interface/hostProcess';
+export { PluginErrors } from '#/app/plugin/errors';
 export { ProfileErrors } from '#/agent/profile/errors';
 export { PromptErrors } from '#/agent/prompt/errors';
 export { ModelsDevImportErrors } from '#/app/kosongConfig/errors';
@@ -80,9 +84,11 @@ export const ErrorCodes = {
   ...FullCompactionErrors.codes,
   ...GoalErrors.codes,
   ...LoopErrors.codes,
+  ...McpErrors.codes,
   ...ModelCatalogErrors.codes,
   ...OsFsErrors.codes,
   ...OsProcessErrors.codes,
+  ...PluginErrors.codes,
   ...ProfileErrors.codes,
   ...PromptErrors.codes,
   ...ModelsDevImportErrors.codes,

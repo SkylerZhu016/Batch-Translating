@@ -7,6 +7,7 @@
  *   - 5xxxx      server internal errors
  *   - 6xxxx      tool runtime
  *   - 7xxxx      LLM provider passthrough (msg = original upstream text)
+ *   - 8xxxx      MCP server passthrough (msg = original upstream text)
  *   - 9xxxx      reserved
  *
  * Domain `KimiError` string codes are mapped onto these numbers at the
@@ -51,6 +52,8 @@ export const ErrorCode = {
   TASK_NOT_FOUND: 40406,
   /** file_id 不存在 */
   FILE_NOT_FOUND: 40407,
+  /** mcp_server_id 不存在 */
+  MCP_SERVER_NOT_FOUND: 40408,
   /** fs path 不存在 */
   FS_PATH_NOT_FOUND: 40409,
   /** workspace_id 不存在 */
@@ -78,6 +81,8 @@ export const ErrorCode = {
   PROMPT_ALREADY_COMPLETED: 40903,
   /** task 已完结，无法取消 */
   TASK_ALREADY_FINISHED: 40904,
+  /** mcp restart 时若已在 connecting/connected */
+  MCP_ALREADY_CONNECTED: 40905,
   /** fs.read 请求 file，但 path 是目录 */
   FS_IS_DIRECTORY: 40906,
   /** fs.read 请求 utf-8，但 path 是二进制；client 改走 `:download` */
@@ -146,6 +151,7 @@ export const ErrorCode = {
   TOOL_NOT_AVAILABLE: 60002,
 
   /** provider.* — provider 原 code 含义保留；`msg` 字段透传上游错误文本。 */
+  /** mcp.* — mcp server 原 code 含义保留；`msg` 字段透传上游错误文本。 */
 } as const;
 
 /**

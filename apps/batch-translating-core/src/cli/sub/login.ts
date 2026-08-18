@@ -1,9 +1,9 @@
 /**
- * `kimi login` — drive the OAuth device-code flow non-interactively.
+ * `batch-translating login` — drive the OAuth device-code flow non-interactively.
  * The `authMethods.terminal-auth.args=['login']` (legacy `_meta` path)
  * advertised by the ACP server points clients at this entry point. The
  * first-class ACP `args=['--login']` path enters the same flow via
- * `kimi acp --login`.
+ * `batch-translating acp --login`.
  */
 
 import type { Command } from 'commander';

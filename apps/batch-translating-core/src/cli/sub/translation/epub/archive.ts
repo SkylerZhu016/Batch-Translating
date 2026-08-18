@@ -579,7 +579,7 @@ async function readEntryContent(
   const stream = await openEntryReadStream(zip, entry);
   // yauzl's fd-slicer ReadStream only flows through 'data' events; async
   // iteration over it never triggers _read. Collect events explicitly.
-  return await new Promise<EntryContent>((resolvePromise, reject) => {
+  return new Promise<EntryContent>((resolvePromise, reject) => {
     let settled = false;
     const chunks: Buffer[] = [];
     let bytes = 0;

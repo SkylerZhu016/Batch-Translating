@@ -1,11 +1,11 @@
 /**
  * `sessionInit` domain — `/init` brief and completion reminder.
  *
- * Verbatim brief handed to the `coder` subagent that orients itself in the
- * translation project (`DEFAULT_INIT_PROMPT`), and the system reminder
- * appended to the main agent once `/init` finishes (`initCompletionReminder`),
- * which carries the freshly loaded project summary content back into the main
- * conversation. Pure constants/functions — no scoped state.
+ * Verbatim brief handed to the `coder` subagent that generates `AGENTS.md`
+ * (`DEFAULT_INIT_PROMPT`), and the system reminder appended to the main agent
+ * once `/init` finishes (`initCompletionReminder`), which carries the freshly
+ * loaded AGENTS.md content back into the main conversation. Pure
+ * constants/functions — no scoped state.
  */
 
 import initMd from './init.md?raw';
@@ -15,13 +15,13 @@ export const DEFAULT_INIT_PROMPT = initMd;
 export function initCompletionReminder(agentsMd: string): string {
   const latest =
     agentsMd.trim().length === 0
-      ? 'No project summary content was found after `/init` completed.'
+      ? 'No AGENTS.md content was found after `/init` completed.'
       : agentsMd;
   return [
-    'The user just ran the `/init` project-orientation pass.',
-    'The system has explored the translation project and produced a summary.',
+    'The user just ran `/init` slash command.',
+    'The system has analyzed the codebase and generated an `AGENTS.md` file.',
     '',
-    'Latest project summary content:',
+    'Latest AGENTS.md file content:',
     latest,
   ].join('\n');
 }

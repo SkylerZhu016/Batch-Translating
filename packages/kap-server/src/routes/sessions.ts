@@ -6,7 +6,6 @@
  *   POST   /sessions                  create
  *   GET    /sessions                  list
  *   GET    /sessions/{session_id}     get
- *   DELETE /sessions/{session_id}     permanently delete
  *   GET    /sessions/{session_id}/profile
  *   POST   /sessions/{session_id}/profile      update title / metadata / agent_config
  *   POST   /sessions/{tail}                    action: fork / compact / undo /
@@ -115,7 +114,6 @@ import {
   compactSessionResponseSchema,
   createSessionChildRequestSchema,
   createSessionRequestSchema,
-  deleteSessionResponseSchema,
   forkSessionRequestSchema,
   getSessionGoalResponseSchema,
   listSessionChildrenResponseSchema,
@@ -156,14 +154,6 @@ interface SessionRouteHost {
     options: { preHandler: unknown[]; schema?: Record<string, unknown> } | undefined,
     handler: (
       req: { id: string; query: unknown; params: unknown },
-      reply: { send(payload: unknown): unknown },
-    ) => Promise<void> | void,
-  ): unknown;
-  delete(
-    path: string,
-    options: { preHandler: unknown[]; schema?: Record<string, unknown> } | undefined,
-    handler: (
-      req: { id: string; params: unknown },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
@@ -339,30 +329,11 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         });
         const handle = await handler.accessor.get(ISessionLifecycleService).create({
           workDir,
-          mainAgentBinding:
-            body.agent_profile === undefined
-              ? undefined
-              : {
-                  profile: body.agent_profile,
-                  model:
-                    typeof body.agent_config?.model === 'string' &&
-                    body.agent_config.model.length > 0
-                      ? body.agent_config.model
-                      : undefined,
-                  thinking: body.agent_config?.thinking,
-                },
         });
-        const metadata = handle.accessor.get(ISessionMetadata);
         if (typeof body.title === 'string') {
-          await metadata.setTitle(body.title);
+          await handle.accessor.get(ISessionMetadata).setTitle(body.title);
         }
-        if (body.metadata !== undefined) {
-          const { cwd: _cwd, ...custom } = body.metadata;
-          if (Object.keys(custom).length > 0) {
-            await metadata.update({ custom });
-          }
-        }
-        const meta = await metadata.read();
+        const meta = await handle.accessor.get(ISessionMetadata).read();
         const session = toWireSession(
           { ...meta, workspaceId: touched.id },
           touched.root,
@@ -627,47 +598,6 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
     getProfileRoute.handler as Parameters<SessionRouteHost['get']>[2],
   );
 
-  const deleteRoute = defineRoute(
-    {
-      method: 'DELETE',
-      path: '/sessions/{session_id}',
-      params: sessionIdParamSchema,
-      success: { data: deleteSessionResponseSchema },
-      errors: {
-        [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
-        [ErrorCode.SESSION_NOT_FOUND]: {},
-      },
-      description: 'Permanently delete a session and its persisted data',
-      tags: ['sessions'],
-    },
-    async (req, reply) => {
-      try {
-        const { session_id } = req.params;
-        const handler = await handlerForSession(core.accessor, session_id);
-        if (handler === undefined) {
-          throw new Error2(
-            ErrorCodes.SESSION_NOT_FOUND,
-            `session ${session_id} does not exist`,
-          );
-        }
-        await handler.accessor.get(ISessionLifecycleService).delete(session_id);
-        core.accessor.get(IEventService).publish({
-          type: 'event.session.deleted',
-          payload: { agentId: 'main', sessionId: session_id },
-        });
-        requestLog(req)?.info({ session_id }, 'session deleted');
-        reply.send(okEnvelope({ deleted: true as const }, req.id));
-      } catch (error) {
-        sendMappedError(reply, req, error);
-      }
-    },
-  );
-  app.delete(
-    deleteRoute.path,
-    deleteRoute.options,
-    deleteRoute.handler as Parameters<SessionRouteHost['delete']>[2],
-  );
-
   const updateProfileRoute = defineRoute(
     {
       method: 'POST',
@@ -685,22 +615,9 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const metadata = req.body.metadata;
-        const { cwd: _cwd, ...customMetadata } = metadata ?? {};
-        const summary =
-          metadata === undefined
-            ? undefined
-            : await core.accessor.get(ISessionIndex).get(session_id);
-        const metadataPatch =
-          metadata === undefined
-            ? undefined
-            : {
-                ...(summary?.custom ?? {}),
-                ...customMetadata,
-              };
         const fields = await core.accessor
           .get(ISessionLegacyService)
-          .updateProfile(session_id, { ...req.body, metadata: metadataPatch });
+          .updateProfile(session_id, req.body);
         const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id));
         // Broadcast the title change to every connection (including clients not
         // subscribed to this session, and covering inactive sessions), so session

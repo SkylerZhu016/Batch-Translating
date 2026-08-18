@@ -15,7 +15,7 @@
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/_base/state/stateRegistry';
-
+import { extractImageCompressionCaptions } from '#/agent/media/image-compress';
 import { userCancellationReason } from '#/_base/utils/abort';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { newMessageId } from '#/agent/contextMemory/messageId';
@@ -232,7 +232,14 @@ export class AgentPromptService implements IAgentPromptService {
     return this.fullCompactionService;
   }
   private extractCompressionCaptions(message: ContextMessage): { message: ContextMessage; captions: readonly string[] } {
-    return { message, captions: [] };
+    if ((message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return { message, captions: [] };
+    const captions: string[] = []; const parts: ContentPart[] = [];
+    for (const part of message.content) {
+      if (part.type !== 'text') { parts.push(part); continue; }
+      const extracted = extractImageCompressionCaptions(part.text); captions.push(...extracted.captions);
+      if (extracted.text.trim().length > 0) parts.push({ type: 'text', text: extracted.text });
+    }
+    return { message: captions.length === 0 ? message : { ...message, content: parts }, captions };
   }
   private appendPrompt(message: ContextMessage, captions: readonly string[]): void {
     const ownerPromptId = message.id ?? newMessageId();

@@ -53,8 +53,16 @@ import type {
   TurnStepInterruptedEvent,
   TurnStepStartedEvent,
 } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
+import type {
+  McpServerStatusEvent,
+  McpServerStatusPayload,
+  ToolListUpdatedEvent,
+  ToolListUpdatedReason,
+} from '@moonshot-ai/agent-core-v2/agent/mcp/mcpService';
+import type { McpOAuthAuthorizationUrlUpdateData } from '@moonshot-ai/agent-core-v2/agent/mcp/tools/auth';
 import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
 import type { WarningEvent } from '@moonshot-ai/agent-core-v2/agent/profile/profileService';
+import type { PluginCommandActivatedEvent } from '@moonshot-ai/agent-core-v2/agent/rpc/rpcService';
 import type {
   ShellCompletedEvent,
   ShellOutputEvent,
@@ -349,7 +357,14 @@ export const kimiErrorCodeSchema = z.enum([
   'task.task_id_empty',
   'task.limit_exceeded',
   'usage.turn_id_conflict',
+  'mcp.server_not_found',
+  'mcp.server_disabled',
+  'mcp.startup_failed',
+  'mcp.tool_name_collision',
+  'mcp.oauth_failed',
   'message.not_found',
+  'plugin.not_found',
+  'plugin.load_failed',
   'request.invalid',
   'request.work_dir_required',
   'request.prompt_input_empty',
@@ -451,6 +466,12 @@ export const toolUpdateSchema = z.object({
   customData: z.unknown().optional(),
 }) satisfies z.ZodType<ToolUpdate>;
 
+export const mcpOAuthAuthorizationUrlUpdateDataSchema = z.object({
+  serverName: z.string(),
+  authorizationUrl: z.string(),
+  expiresAt: z.number().optional(),
+}) satisfies z.ZodType<McpOAuthAuthorizationUrlUpdateData>;
+
 export const turnEndReasonSchema = z.enum(['completed', 'cancelled', 'failed', 'blocked']) satisfies z.ZodType<TurnEndReason>;
 
 export const agentPhaseSchema = z.discriminatedUnion('kind', [
@@ -550,11 +571,6 @@ export const sessionCreatedEventSchema = z.object({
   session: sessionSchema,
 });
 
-export const sessionDeletedEventSchema = z.object({
-  type: z.literal('event.session.deleted'),
-  session_id: z.string().min(1),
-});
-
 export const workspaceCreatedEventSchema = z.object({
   type: z.literal('event.workspace.created'),
   workspace: workspaceSchema,
@@ -625,6 +641,15 @@ export const skillActivatedEventSchema = z.object({
   skillPath: z.string().optional(),
   skillSource: skillSourceSchema.optional(),
 });
+
+export const pluginCommandActivatedEventSchema = z.object({
+  type: z.literal('plugin_command.activated'),
+  activationId: z.string(),
+  pluginId: z.string(),
+  commandName: z.string(),
+  commandArgs: z.string().optional(),
+  trigger: z.literal('user-slash'),
+}) satisfies z.ZodType<PluginCommandActivatedEvent>;
 
 export const errorEventSchema = kimiErrorPayloadObjectSchema.extend({
   type: z.literal('error'),
@@ -893,13 +918,26 @@ export const toolListUpdatedReasonSchema = z.enum([
   'mcp.connected',
   'mcp.disconnected',
   'mcp.failed',
-]);
+]) satisfies z.ZodType<ToolListUpdatedReason>;
 
 export const toolListUpdatedEventSchema = z.object({
   type: z.literal('tool.list.updated'),
   reason: toolListUpdatedReasonSchema,
   serverName: z.string(),
-});
+}) satisfies z.ZodType<ToolListUpdatedEvent>;
+
+export const mcpServerStatusPayloadSchema = z.object({
+  name: z.string(),
+  transport: z.enum(['stdio', 'http']),
+  status: z.enum(['pending', 'connected', 'failed', 'disabled', 'needs-auth']),
+  toolCount: z.number(),
+  error: z.string().optional(),
+}) satisfies z.ZodType<McpServerStatusPayload>;
+
+export const mcpServerStatusEventSchema = z.object({
+  type: z.literal('mcp.server.status'),
+  server: mcpServerStatusPayloadSchema,
+}) satisfies z.ZodType<McpServerStatusEvent>;
 
 export const agentEventSchema = z.discriminatedUnion('type', [
   errorEventSchema,
@@ -909,7 +947,6 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   agentDisposedEventSchema,
   sessionMetaUpdatedEventSchema,
   sessionCreatedEventSchema,
-  sessionDeletedEventSchema,
   workspaceCreatedEventSchema,
   workspaceUpdatedEventSchema,
   workspaceDeletedEventSchema,
@@ -917,6 +954,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   sessionStatusChangedEventSchema,
   goalUpdatedEventSchema,
   skillActivatedEventSchema,
+  pluginCommandActivatedEventSchema,
   turnStartedEventSchema,
   turnEndedEventSchema,
   turnStepStartedEventSchema,
@@ -934,6 +972,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   shellCompletedEventSchema,
   toolResultEventSchema,
   toolListUpdatedEventSchema,
+  mcpServerStatusEventSchema,
   subagentSpawnedEventSchema,
   subagentStartedEventSchema,
   subagentSuspendedEventSchema,

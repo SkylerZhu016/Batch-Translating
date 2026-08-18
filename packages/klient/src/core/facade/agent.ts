@@ -8,6 +8,7 @@
  */
 
 import type { IAgentRPCService } from '@moonshot-ai/agent-core-v2/agent/rpc/rpc';
+import type { IAgentMcpService } from '@moonshot-ai/agent-core-v2/agent/mcp/mcp';
 import type { IAgentPlanService } from '@moonshot-ai/agent-core-v2/agent/plan/plan';
 import type { IAgentProfileService } from '@moonshot-ai/agent-core-v2/agent/profile/profile';
 import type { IAgentShellCommandService } from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommand';
@@ -29,6 +30,7 @@ export type UsageStatus = Awaited<ReturnType<IAgentUsageService['status']>>;
 export type AgentContextData = Awaited<ReturnType<IAgentRPCService['getContext']>>;
 export type PlanData = Awaited<ReturnType<IAgentPlanService['status']>>;
 export type AgentTaskInfo = Awaited<ReturnType<IAgentTaskService['list']>>[number];
+export type McpServerEntry = ReturnType<IAgentMcpService['list']>[number];
 
 export interface AgentFacade {
   prompt(input: {
@@ -60,6 +62,12 @@ export interface AgentFacade {
   getTasks(input?: { activeOnly?: boolean; limit?: number }): Promise<readonly AgentTaskInfo[]>;
   stopTask(input: { taskId: string; reason?: string }): Promise<void>;
   getTaskOutput(input: { taskId: string; tail?: number }): Promise<string>;
+  /**
+   * Session-merged MCP server entries (workspace set + ephemeral session
+   * overlay). This is a live snapshot, so entries may still be pending while
+   * the initial connection attempt runs.
+   */
+  getMcpServers(): Promise<readonly McpServerEntry[]>;
   /**
    * Trigger a manual full compaction. Async: `true` means the compaction was
    * started (it runs in the background); `false` means one is already running.
@@ -110,6 +118,8 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     },
     getTaskOutput: (input) =>
       call(scope, 'agentTaskService', 'readOutput', [input.taskId, input.tail]) as Promise<string>,
+    getMcpServers: () =>
+      call(scope, 'agentMcpService', 'list', []) as Promise<readonly McpServerEntry[]>,
     compact: (input) =>
       call(scope, 'agentFullCompactionService', 'begin', [
         { source: 'manual', instruction: input?.instruction },

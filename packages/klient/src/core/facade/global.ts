@@ -35,7 +35,15 @@ import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model'
 import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
 
+import type { McpServerConfig } from '../../contract/mcp.js';
 import type { AnonymousProviderInput, GenerateEvent, GenerateInput, GenerateParams, ProviderInput } from './kosong-types.js';
+import type {
+  PluginCommandDef,
+  PluginInfo,
+  PluginSummary,
+  PluginUpdateStatus,
+  ReloadSummary,
+} from '@moonshot-ai/agent-core-v2/app/plugin/types';
 import type { CapabilityStatus } from '@moonshot-ai/agent-core-v2/app/capability/types';
 
 /** Low-level caller the klient factory builds: routes + validates one service call. */
@@ -96,11 +104,14 @@ export interface GlobalSessionsFacade {
    * Create a session rooted at `workDir` (the workspace is registered
    * implicitly), optionally titled. Returns the persisted metadata. No agent
    * is created — `session(id).agent('main')` materializes it on first use.
+   * `mcpServers` injects ephemeral per-session MCP servers: connected only
+   * for this session, never persisted.
    */
   create(input: {
     workDir: string;
     additionalDirs?: readonly string[];
     title?: string;
+    mcpServers?: Readonly<Record<string, McpServerConfig>>;
   }): Promise<SessionMeta>;
 }
 
@@ -193,6 +204,18 @@ export interface GlobalCapabilitiesFacade {
   install(id: string): Promise<CapabilityStatus>;
 }
 
+export interface GlobalPluginsFacade {
+  list(): Promise<readonly PluginSummary[]>;
+  info(id: string): Promise<PluginInfo>;
+  install(source: string): Promise<PluginSummary>;
+  setEnabled(input: { id: string; enabled: boolean }): Promise<void>;
+  setMcpServerEnabled(input: { id: string; server: string; enabled: boolean }): Promise<void>;
+  remove(id: string): Promise<void>;
+  reload(): Promise<ReloadSummary>;
+  checkUpdates(): Promise<readonly PluginUpdateStatus[]>;
+  listCommands(): Promise<readonly PluginCommandDef[]>;
+}
+
 export interface GlobalHostFsFacade {
   browse(absPath?: string): Promise<FsBrowseResponse>;
   home(): Promise<FsHomeResponse>;
@@ -221,6 +244,7 @@ export interface GlobalFacade {
   readonly kosong: GlobalKosongFacade;
   readonly auth: GlobalAuthFacade;
   readonly flags: GlobalFlagsFacade;
+  readonly plugins: GlobalPluginsFacade;
   readonly capabilities: GlobalCapabilitiesFacade;
   readonly hostFs: GlobalHostFsFacade;
   env(): Promise<KlientEnvInfo>;
@@ -276,14 +300,14 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       get: (id) => call('sessionIndex', 'get', [id]) as Promise<SessionSummary | undefined>,
       countActive: (workspaceIds) =>
         call('sessionIndex', 'count', [{ workspaceIds }]) as Promise<number>,
-      create: async ({ workDir, additionalDirs, title }) => {
+      create: async ({ workDir, additionalDirs, title, mcpServers }) => {
         // The workspace handler owns session creation: materialize (or reuse)
         // the handler for the root, then create under it.
         const handler = (await scoped({}, 'workspaceLifecycleService', 'handlerFor', [
           { root: workDir },
         ])) as { id: string };
         const handle = (await scoped({ workspaceId: handler.id }, 'sessionLifecycleService', 'create', [
-          { workDir, additionalDirs },
+          { workDir, additionalDirs, mcpServers },
         ])) as { id: string };
         const scope = { sessionId: handle.id };
         if (title !== undefined) {
@@ -415,6 +439,22 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       explain: (id) =>
         call('flagService', 'explain', [id]) as Promise<ExperimentalFeatureState | undefined>,
       snapshot: () => call('flagService', 'snapshot', []) as Promise<Record<string, boolean>>,
+    },
+
+    plugins: {
+      list: () => call('pluginService', 'listPlugins', []) as Promise<readonly PluginSummary[]>,
+      info: (id) => call('pluginService', 'getPluginInfo', [{ id }]) as Promise<PluginInfo>,
+      install: (source) =>
+        call('pluginService', 'installPlugin', [{ source }]) as Promise<PluginSummary>,
+      setEnabled: (input) => call('pluginService', 'setPluginEnabled', [input]) as Promise<void>,
+      setMcpServerEnabled: (input) =>
+        call('pluginService', 'setPluginMcpServerEnabled', [input]) as Promise<void>,
+      remove: (id) => call('pluginService', 'removePlugin', [{ id }]) as Promise<void>,
+      reload: () => call('pluginService', 'reloadPlugins', []) as Promise<ReloadSummary>,
+      checkUpdates: () =>
+        call('pluginService', 'checkUpdates', []) as Promise<readonly PluginUpdateStatus[]>,
+      listCommands: () =>
+        call('pluginService', 'listPluginCommands', []) as Promise<readonly PluginCommandDef[]>,
     },
 
     capabilities: {

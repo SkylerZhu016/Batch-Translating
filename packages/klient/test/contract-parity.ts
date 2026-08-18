@@ -41,6 +41,7 @@ import type {
 } from '@moonshot-ai/agent-core-v2/agent/rpc/core-api';
 import type { UsageStatus } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
 import type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
+import type { McpServerEntry } from '@moonshot-ai/agent-core-v2/mcpCore/connection-manager';
 import type { FullCompactionInput } from '@moonshot-ai/agent-core-v2/agent/fullCompaction/fullCompaction';
 import type { ISessionScopeHandle } from '@moonshot-ai/agent-core-v2/_base/di/scope';
 import type {
@@ -94,6 +95,24 @@ import type {
 import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model';
 import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
+import type {
+  GetPluginInfoInput,
+  InstallPluginInput,
+  RemovePluginInput,
+  SetPluginEnabledInput,
+  SetPluginMcpServerEnabledInput,
+} from '@moonshot-ai/agent-core-v2/app/plugin/plugin';
+import type {
+  PluginCommandDef,
+  PluginDiagnostic,
+  PluginGithubMetadata,
+  PluginInfo,
+  PluginManifest,
+  PluginMcpServerInfo,
+  PluginSummary,
+  PluginUpdateStatus,
+  ReloadSummary,
+} from '@moonshot-ai/agent-core-v2/app/plugin/types';
 import type { ProviderConfig } from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
 import type {
   SessionListQuery,
@@ -183,6 +202,7 @@ import {
 } from '../src/contract/session/approval.js';
 import {
   fullCompactionInputSchema,
+  mcpServerEntrySchema,
 } from '../src/contract/agent/services.js';
 import {
   createChildSessionOptionsSchema,
@@ -244,6 +264,22 @@ import {
   fsHomeResponseSchema,
 } from '../src/contract/global/hostFs.js';
 import { modelConfigSchema } from '../src/contract/global/models.js';
+import {
+  getPluginInfoInputSchema,
+  installPluginInputSchema,
+  pluginCommandDefSchema,
+  pluginDiagnosticSchema,
+  pluginGithubMetadataSchema,
+  pluginInfoSchema,
+  pluginManifestSchema,
+  pluginMcpServerInfoSchema,
+  pluginSummarySchema,
+  pluginUpdateStatusSchema,
+  reloadSummarySchema,
+  removePluginInputSchema,
+  setPluginEnabledInputSchema,
+  setPluginMcpServerEnabledInputSchema,
+} from '../src/contract/global/plugins.js';
 import { providerConfigSchema } from '../src/contract/global/providers.js';
 import {
   sessionListQuerySchema,
@@ -365,6 +401,30 @@ const _refreshProviderModelsResponse: AssertWire<
 
 // models.ts
 const _modelConfig: AssertWire<typeof modelConfigSchema, ModelRecord> = true;
+
+// plugins.ts
+const _pluginSummary: AssertWire<typeof pluginSummarySchema, PluginSummary> = true;
+const _pluginInfo: AssertWire<typeof pluginInfoSchema, PluginInfo> = true;
+const _pluginManifest: AssertWire<typeof pluginManifestSchema, PluginManifest> = true;
+const _pluginMcpServerInfo: AssertWire<typeof pluginMcpServerInfoSchema, PluginMcpServerInfo> =
+  true;
+const _pluginDiagnostic: AssertWire<typeof pluginDiagnosticSchema, PluginDiagnostic> = true;
+const _pluginGithubMetadata: AssertWire<typeof pluginGithubMetadataSchema, PluginGithubMetadata> =
+  true;
+const _reloadSummary: AssertWire<typeof reloadSummarySchema, ReloadSummary> = true;
+const _pluginUpdateStatus: AssertWire<typeof pluginUpdateStatusSchema, PluginUpdateStatus> = true;
+const _pluginCommandDef: AssertWire<typeof pluginCommandDefSchema, PluginCommandDef> = true;
+const _installPluginInput: AssertWire<typeof installPluginInputSchema, InstallPluginInput> = true;
+const _setPluginEnabledInput: AssertWire<
+  typeof setPluginEnabledInputSchema,
+  SetPluginEnabledInput
+> = true;
+const _setPluginMcpServerEnabledInput: AssertWire<
+  typeof setPluginMcpServerEnabledInputSchema,
+  SetPluginMcpServerEnabledInput
+> = true;
+const _removePluginInput: AssertWire<typeof removePluginInputSchema, RemovePluginInput> = true;
+const _getPluginInfoInput: AssertWire<typeof getPluginInfoInputSchema, GetPluginInfoInput> = true;
 
 // env.ts has no named schemas; `platform` narrows to `NodeJS.Platform` in the
 // engine — assert the bootstrap properties are all strings instead. The
@@ -512,7 +572,8 @@ const _stopTaskPayload: AssertWire<typeof stopTaskPayloadSchema, StopTaskPayload
 const _getTaskOutputPayload: AssertWire<typeof getTaskOutputPayloadSchema, GetTaskOutputPayload> =
   true;
 
-// agent/services.ts (fullCompaction)
+// agent/services.ts (mcp / fullCompaction)
+const _mcpServerEntry: AssertWire<typeof mcpServerEntrySchema, McpServerEntry> = true;
 const _fullCompactionInput: AssertWire<typeof fullCompactionInputSchema, FullCompactionInput> =
   true;
 

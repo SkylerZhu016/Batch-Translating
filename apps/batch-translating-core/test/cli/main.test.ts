@@ -223,13 +223,10 @@ describe('main entry command handling', () => {
     }
   });
 
-  it('installs crash handlers before parsing CLI arguments', () => {
+  it('does not install upstream crash handlers before parsing CLI arguments', () => {
     main();
 
-    expect(mocks.installCrashHandlers).toHaveBeenCalledTimes(1);
-    expect(mocks.installCrashHandlers.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.createProgram.mock.invocationCallOrder[0]!,
-    );
+    expect(mocks.installCrashHandlers).not.toHaveBeenCalled();
     expect(mocks.parse).toHaveBeenCalledWith(process.argv);
   });
 
@@ -239,7 +236,7 @@ describe('main entry command handling', () => {
       process.title = 'kimi-test-runner';
       main();
 
-      expect(process.title).toBe('kimi-code');
+      expect(process.title).toBe('batch-translating');
     } finally {
       process.title = originalTitle;
     }

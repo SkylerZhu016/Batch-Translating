@@ -20,5 +20,5 @@ export default {
   renameSession: 'Rename',
   forkSession: 'Fork session',
   archiveSession: 'Archive',
-  exportSession: 'Export session',
+  exportSession: 'Export redacted diagnostics',
 };

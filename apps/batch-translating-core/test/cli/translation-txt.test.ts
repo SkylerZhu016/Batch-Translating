@@ -319,14 +319,14 @@ describe('TXT CLI registration', () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const exitCodes: number[] = [];
-    const program = new Command('kimi');
+    const program = new Command('batch-translating');
     registerTranslationCommand(program, {
       stdout: { write: (chunk) => (stdout.push(chunk), true) },
       stderr: { write: (chunk) => (stderr.push(chunk), true) },
       setExitCode: (code) => exitCodes.push(code),
     });
 
-    await program.parseAsync(['node', 'kimi', 'translation', 'txt', 'validate', source]);
+    await program.parseAsync(['node', 'batch-translating', 'translation', 'txt', 'validate', source]);
 
     expect(stderr).toEqual([]);
     expect(exitCodes).toEqual([]);

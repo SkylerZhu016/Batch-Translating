@@ -106,6 +106,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/mcp/servers",
+    ],
+    [
+      "GET",
       "/api/v1/meta",
     ],
     [
@@ -291,6 +295,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/gui/store/setItem",
+    ],
+    [
+      "POST",
+      "/api/v1/mcp/servers/{tail}",
     ],
     [
       "POST",

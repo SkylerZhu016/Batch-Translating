@@ -4,9 +4,10 @@
  *
  * Drives the REAL handler chain (WorkspaceLifecycleService →
  * SessionLifecycleService) with the real Workspace-scope resource services
- * and proves: no skill rescan when the second session of a workspace lists
- * skills, and the fs-watch fan-out refreshing a live session's skill list
- * after `.agents/skills` changes on disk. Run:
+ * and proves: one shared MCP connection manager (and one initial connect)
+ * for two sessions of the same workspace, no skill rescan when the second
+ * session lists skills, and the fs-watch fan-out refreshing a live session's
+ * skill list after `.agents/skills` changes on disk. Run:
  * `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
  * test/workspace/workspaceResources.test.ts`.
  */
@@ -26,16 +27,20 @@ import {
 import { type ScopedTestHost, createScopedTestHost, stubPair } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProfileRegistryService';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { BuiltinAgentProfileLoaderService } from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
 import { UserAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoaderService';
+import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
+import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
 import { IBootstrapService, resolveHostArgs } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { IEventService } from '#/app/event/event';
+import { IPluginService } from '#/app/plugin/plugin';
 import { IProjectLocalConfigService } from '#/app/projectLocalConfig/projectLocalConfig';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
@@ -59,6 +64,7 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import '#/session/agentLifecycle/profile/profiles';
+import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { SessionSkillCatalogService } from '#/session/sessionSkillCatalog/skillCatalogService';
@@ -82,6 +88,11 @@ import { IExplicitAgentProfileLoader } from '#/workspace/workspaceAgentProfileLo
 import { ExplicitAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoaderService';
 import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructions';
 import { WorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructionsService';
+import { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp';
+import { WorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcpService';
+import { IMcpOAuthStore, McpOAuthStoreAdapter } from '#/app/mcpConfig/oauthStore';
+import { IWorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/workspaceMcpConfig';
+import { WorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
 import { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 import { IWorkspaceDirs } from '#/workspace/workspaceDirs/workspaceDirs';
 import { WorkspaceDirsService } from '#/workspace/workspaceDirs/workspaceDirsService';
@@ -89,10 +100,12 @@ import { IWorkspaceSkillCatalog } from '#/workspace/workspaceSkillCatalog/worksp
 import { WorkspaceSkillCatalogService } from '#/workspace/workspaceSkillCatalog/workspaceSkillCatalogService';
 import { ExplicitFileSkillSource, IExplicitFileSkillSource } from '#/workspace/workspaceSkillCatalog/explicitFileSkillSource';
 import { ExtraFileSkillSource, IExtraFileSkillSource } from '#/workspace/workspaceSkillCatalog/extraFileSkillSource';
+import { IPluginSkillSource, PluginSkillSource } from '#/workspace/workspaceSkillCatalog/pluginSkillSource';
 import { IWorkspaceRootSkillSource, WorkspaceRootSkillSource } from '#/workspace/workspaceSkillCatalog/rootFileSkillSource';
 
 import { stubLog } from '../_base/log/stubs';
 import { stubSkill } from '../app/skillCatalog/stubs';
+import { stdioFixture } from '../mcpCore/stubs';
 
 function workspaceCatalogStub(): IWorkspaceService {
   const workspaces = new Map<string, Workspace>();
@@ -115,6 +128,16 @@ function workspaceCatalogStub(): IWorkspaceService {
     update: () => Promise.resolve(undefined),
     delete: () => Promise.resolve(),
   };
+}
+
+function pluginStub(): IPluginService {
+  return {
+    _serviceBrand: undefined,
+    onDidReload: Event.None,
+    enabledMcpServers: async () => ({}),
+    pluginSkillRoots: async () => [],
+    pluginAgentRoots: async () => [],
+  } as unknown as IPluginService;
 }
 
 class TrustedWorkspaceTrustStub implements IWorkspaceTrust {
@@ -173,6 +196,7 @@ describe('workspace resource sharing (handler chain)', () => {
     registerScopedService(LifecycleScope.Workspace, IExplicitFileSkillSource, ExplicitFileSkillSource, ScopeActivation.OnScopeCreated, 'workspaceSkillCatalog');
     registerScopedService(LifecycleScope.Workspace, IExtraFileSkillSource, ExtraFileSkillSource, ScopeActivation.OnScopeCreated, 'workspaceSkillCatalog');
     registerScopedService(LifecycleScope.Workspace, IWorkspaceRootSkillSource, WorkspaceRootSkillSource, ScopeActivation.OnScopeCreated, 'workspaceSkillCatalog');
+    registerScopedService(LifecycleScope.Workspace, IPluginSkillSource, PluginSkillSource, ScopeActivation.OnScopeCreated, 'workspaceSkillCatalog');
     registerScopedService(
       LifecycleScope.Workspace,
       IWorkspaceAgentProfileLoader,
@@ -183,6 +207,7 @@ describe('workspace resource sharing (handler chain)', () => {
     registerScopedService(LifecycleScope.Workspace, IExtraAgentProfileLoader, ExtraAgentProfileLoaderService, ScopeActivation.OnScopeCreated, 'workspaceAgentProfileLoader');
     registerScopedService(LifecycleScope.Workspace, IExplicitAgentProfileLoader, ExplicitAgentProfileLoaderService, ScopeActivation.OnScopeCreated, 'workspaceAgentProfileLoader');
     registerScopedService(LifecycleScope.Workspace, IUserAgentProfileLoader, UserAgentProfileLoaderService, ScopeActivation.OnScopeCreated, 'workspaceAgentProfileLoader');
+    registerScopedService(LifecycleScope.Workspace, IPluginAgentProfileLoader, PluginAgentProfileLoaderService, ScopeActivation.OnScopeCreated, 'workspaceAgentProfileLoader');
     registerScopedService(
       LifecycleScope.Workspace,
       IWorkspaceInstructionsService,
@@ -192,10 +217,31 @@ describe('workspace resource sharing (handler chain)', () => {
     );
     registerScopedService(
       LifecycleScope.Workspace,
+      IWorkspaceMcpService,
+      WorkspaceMcpService,
+      ScopeActivation.OnScopeCreated,
+      'workspaceMcp',
+    );
+    registerScopedService(
+      LifecycleScope.Workspace,
+      IWorkspaceMcpConfigService,
+      WorkspaceMcpConfigService,
+      ScopeActivation.OnScopeCreated,
+      'workspaceMcpConfig',
+    );
+    registerScopedService(
+      LifecycleScope.Workspace,
       IWorkspaceTrust,
       TrustedWorkspaceTrustStub,
       ScopeActivation.OnDemand,
       'workspaceTrust',
+    );
+    registerScopedService(
+      LifecycleScope.App,
+      IMcpOAuthStore,
+      McpOAuthStoreAdapter,
+      ScopeActivation.OnDemand,
+      'mcpConfig',
     );
     registerScopedService(
       LifecycleScope.Workspace,
@@ -253,6 +299,7 @@ describe('workspace resource sharing (handler chain)', () => {
       } as unknown as IConfigService),
       stubPair(ITelemetryService, noopTelemetryService),
       stubPair(ISkillDiscovery, discovery),
+      stubPair(IPluginService, pluginStub()),
       stubPair(IWorkspaceService, workspaceCatalogStub()),
       stubPair(ISessionIndex, {
         _serviceBrand: undefined,
@@ -339,6 +386,38 @@ describe('workspace resource sharing (handler chain)', () => {
       .handlerFor({ root });
     return handler.accessor.get(ISessionLifecycleService);
   }
+
+  it('runs one shared MCP manager and one initial connect for two concurrent sessions', async () => {
+    const root = await makeRoot('kimi-ws-mcp-');
+    await mkdir(join(root, '.kimi-code'), { recursive: true });
+    await writeFile(
+      join(root, '.kimi-code', 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          alpha: { transport: 'stdio', command: process.execPath, args: [stdioFixture] },
+        },
+      }),
+      'utf8',
+    );
+    const home = await makeRoot('kimi-ws-mcp-home-');
+    buildHost(new InMemorySkillDiscovery(), home);
+    const connectAll = vi.spyOn(McpConnectionManager.prototype, 'connectAll');
+
+    const svc = await handlerFor(root);
+    const [s1, s2] = await Promise.all([
+      svc.create({ sessionId: 's1', workDir: root }),
+      svc.create({ sessionId: 's2', workDir: root }),
+    ]);
+
+    const m1 = s1.accessor.get(ISessionMcpHandle);
+    const m2 = s2.accessor.get(ISessionMcpHandle);
+    expect(m1.connectionManager).toBe(m2.connectionManager);
+    expect(connectAll).toHaveBeenCalledTimes(1);
+    // Session creation no longer waits for the initial connect; the seeded
+    // handle's readiness promise is the wait point.
+    await m1.ready;
+    expect(m1.connectionManager.get('alpha')?.status).toBe('connected');
+  }, 20000);
 
   it('does not rescan skills when a second session of the workspace lists them', async () => {
     const root = await makeRoot('kimi-ws-skill-');

@@ -79,11 +79,11 @@ describe('facade routing', () => {
     });
 
     channel.result = undefined; // void output
-    await klient.global.config.set({ domain: 'd', patch: {} });
+    await klient.global.plugins.setMcpServerEnabled({ id: 'p', server: 's', enabled: true });
     expect(channel.calls[1]).toMatchObject({
-      service: 'configService',
-      method: 'set',
-      args: ['d', {}, undefined],
+      service: 'pluginService',
+      method: 'setPluginMcpServerEnabled',
+      args: [{ id: 'p', server: 's', enabled: true }],
     });
 
     channel.results.set('oauthService.status', { loggedIn: false });
@@ -240,7 +240,26 @@ describe('session skills routing', () => {
   });
 });
 
-describe('agent compaction routing', () => {
+describe('agent mcp / compaction routing', () => {
+  it('getMcpServers returns the live snapshot with the agent scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('main');
+
+    const entries = [
+      { name: 'mock', transport: 'stdio', status: 'pending', toolCount: 0 },
+    ];
+    channel.results.set('agentMcpService.list', entries);
+    await expect(agent.getMcpServers()).resolves.toEqual(entries);
+    expect(channel.calls[0]).toEqual({
+      scope: { sessionId: 's1', agentId: 'main' },
+      service: 'agentMcpService',
+      method: 'list',
+      args: [],
+    });
+    expect(channel.calls).toHaveLength(1);
+  });
+
   it('compact issues a manual begin with the optional instruction', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
@@ -304,7 +323,9 @@ describe('session lifecycle routing', () => {
     channel.results.set('sessionIndex.get', SUMMARY);
     channel.results.set('sessionLifecycleService.restore', { id: 's1', kind: 2 });
 
-    const opts = { additionalDirs: ['/extra'] };
+    const opts = {
+      mcpServers: { example: { transport: 'stdio' as const, command: 'node' } },
+    };
     await expect(klient.session('s1').restore(opts)).resolves.toBe(true);
 
     expect(channel.calls[1]).toEqual({
@@ -315,7 +336,7 @@ describe('session lifecycle routing', () => {
     });
   });
 
-  it('sessions.create forwards create options to the engine', async () => {
+  it('sessions.create forwards mcpServers to the engine', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
     channel.results.set('workspaceLifecycleService.handlerFor', { id: 'w1', kind: 1 });
@@ -327,14 +348,29 @@ describe('session lifecycle routing', () => {
       archived: false,
     });
 
-    await klient.global.sessions.create({ workDir: '/x', additionalDirs: ['/extra'] });
+    const mcpServers = {
+      example: { transport: 'stdio' as const, command: 'node', args: ['server.mjs'] },
+    };
+    await klient.global.sessions.create({ workDir: '/x', mcpServers });
 
     expect(channel.calls[1]).toMatchObject({
       scope: { workspaceId: 'w1' },
       service: 'sessionLifecycleService',
       method: 'create',
-      args: [{ workDir: '/x', additionalDirs: ['/extra'] }],
+      args: [{ workDir: '/x', mcpServers }],
     });
+  });
+
+  it('sessions.create rejects malformed mcpServers before the call leaves the client', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    await expect(
+      klient.global.sessions.create({
+        workDir: '/x',
+        mcpServers: { bad: { transport: 'http', url: 'not-a-url' } },
+      }),
+    ).rejects.toBeInstanceOf(KlientValidationError);
+    expect(channel.calls.some((call) => call.method === 'create')).toBe(false);
   });
 });
 

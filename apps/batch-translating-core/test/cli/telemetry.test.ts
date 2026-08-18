@@ -1,6 +1,6 @@
 /**
  * Tests for the CLI telemetry bootstrap helpers, focusing on the
- * `kimi web` / `kimi server run` host wiring added in `cli/telemetry.ts`.
+ * `batch-translating web` host wiring and the disabled telemetry contract in `cli/telemetry.ts`.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => ({
       fileError: undefined,
     }),
   ),
-  getCachedAccessToken: vi.fn(async () => 'tok'),
+  getCachedAccessToken: vi.fn(async () => null),
 }));
 
 vi.mock('@moonshot-ai/kimi-telemetry', () => ({
@@ -56,6 +56,8 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
 describe('initializeServerTelemetry', () => {
   beforeEach(() => {
     mocks.initializeTelemetry.mockClear();
+    mocks.createKimiDeviceId.mockClear();
+    mocks.getCachedAccessToken.mockClear();
     mocks.loadRuntimeConfigSafe.mockClear();
     mocks.loadRuntimeConfigSafe.mockReturnValue({
       config: { defaultModel: 'kimi-k2', telemetry: true },
@@ -63,20 +65,25 @@ describe('initializeServerTelemetry', () => {
     });
   });
 
-  it('configures the sink with ui_mode="web" and the CLI product identity', async () => {
+  it('disables upstream telemetry for the web host without creating an identity or token', async () => {
     const { initializeServerTelemetry } = await import('#/cli/telemetry');
     const client = initializeServerTelemetry({ version: '1.2.3' });
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
       expect.objectContaining({
-        appName: 'kimi-code-cli',
+        appName: 'batch-translating-cli',
         version: '1.2.3',
         uiMode: 'web',
-        model: 'kimi-k2',
-        enabled: true,
-        deviceId: 'device-123',
+        enabled: false,
+        deviceId: 'telemetry-disabled',
         homeDir: '/home/.batch-translating',
       }),
     );
+    const initOptions = mocks.initializeTelemetry.mock.calls[0]?.[0] as {
+      readonly getAccessToken?: () => Promise<unknown>;
+    };
+    await expect(initOptions.getAccessToken?.()).resolves.toBeNull();
+    expect(mocks.createKimiDeviceId).not.toHaveBeenCalled();
+    expect(mocks.getCachedAccessToken).not.toHaveBeenCalled();
     // The returned client wraps the module functions so core + the host share
     // the same underlying client.
     expect(client).toEqual(
@@ -104,7 +111,7 @@ describe('initializeServerTelemetry', () => {
     );
   });
 
-  it('degrades to enabled with no model when config is unreadable', async () => {
+  it('keeps telemetry disabled with no model when config is unreadable', async () => {
     mocks.loadRuntimeConfigSafe.mockReturnValue({
       config: {},
       fileError: new Error('bad toml'),
@@ -113,7 +120,19 @@ describe('initializeServerTelemetry', () => {
     initializeServerTelemetry({ version: '1.2.3' });
 
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
-      expect.objectContaining({ enabled: true, model: undefined }),
-    );
+      expect.objectContaining({
+       appName: 'batch-translating-cli',
+       deviceId: 'telemetry-disabled',
+       enabled: false,
+     }),
+   );
+   const initOptions = mocks.initializeTelemetry.mock.calls[0]?.[0] as {
+      readonly model?: unknown;
+     readonly getAccessToken?: () => Promise<unknown>;
+   };
+    expect(initOptions.model).toBeUndefined();
+    await expect(initOptions.getAccessToken?.()).resolves.toBeNull();
+    expect(mocks.createKimiDeviceId).not.toHaveBeenCalled();
+    expect(mocks.getCachedAccessToken).not.toHaveBeenCalled();
   });
 });

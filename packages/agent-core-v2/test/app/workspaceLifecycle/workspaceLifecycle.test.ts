@@ -23,6 +23,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import type { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionProcessRunner } from '#/session/process/processRunner';
@@ -31,11 +32,13 @@ import { IWorkspaceAgentProfileLoader } from '#/workspace/workspaceAgentProfileL
 import { IExtraAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoader';
 import { IExplicitAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoader';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
+import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
 import { IAppStateService } from '#/app/state/appState';
 import { AppStateService } from '#/app/state/appStateService';
 import { IWorkspaceStateService } from '#/workspace/state/workspaceState';
 import { WorkspaceStateService } from '#/workspace/state/workspaceStateService';
 import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructions';
+import { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp';
 import { IWorkspaceDirs } from '#/workspace/workspaceDirs/workspaceDirs';
 import { WorkspaceDirsService } from '#/workspace/workspaceDirs/workspaceDirsService';
 import { IWorkspaceService, type Workspace } from '#/app/workspace/workspace';
@@ -183,6 +186,7 @@ function sessionStubs(): ReturnType<typeof stubPair>[] {
     stubPair(IExtraAgentProfileLoader, agentProfileLoaderStub()),
     stubPair(IExplicitAgentProfileLoader, agentProfileLoaderStub()),
     stubPair(IUserAgentProfileLoader, userAgentProfileLoaderStub()),
+    stubPair(IPluginAgentProfileLoader, agentProfileLoaderStub()),
     stubPair(IWorkspaceInstructionsService, (() => {
       const onDidChange = () => ({ dispose: () => {} });
       return {
@@ -200,6 +204,20 @@ function sessionStubs(): ReturnType<typeof stubPair>[] {
         }),
       } as unknown as IWorkspaceInstructionsService;
     })()),
+    stubPair(IWorkspaceMcpService, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      connectionManager: () => {
+        throw new Error('not implemented');
+      },
+      sessionHandle: () => ({
+        _serviceBrand: undefined,
+        ready: Promise.resolve(),
+        get connectionManager(): McpConnectionManager {
+          throw new Error('not implemented');
+        },
+      }),
+    } as unknown as IWorkspaceMcpService),
     stubPair(IAgentLifecycleService, (() => {
       const main = {
         id: 'main',

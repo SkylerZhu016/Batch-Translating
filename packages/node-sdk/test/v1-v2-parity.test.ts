@@ -38,6 +38,11 @@ import {
   type JsonObject,
   type KimiConfig,
   type KimiHarness,
+  type McpServerConfig,
+  type McpStartupMetrics,
+  type PluginCommandDef,
+  type PluginInfo,
+  type PluginSummary,
   type QuestionRequest,
   type QuestionResult,
   type ResumedAgentState,
@@ -187,6 +192,26 @@ const KNOWN_DIFFS = {
   // the warning count; message text is compared only when both are empty.
   getConfigDiagnostics: (diagnostics: ConfigDiagnostics): unknown =>
     diagnostics.warnings.length,
+  // `getPluginInfo` carries volatile install facts: `root` / `manifestPath`
+  // point into the per-home managed copy and `installedAt` / `updatedAt` are
+  // stamped at install time — per-home and per-run by construction, not a
+  // semantic difference. Everything else (manifest echo, MCP server info,
+  // counts, diagnostics) compares in full after the home-prefix scrub.
+  getPluginInfo: (info: PluginInfo, home: HomePair): unknown => {
+    const projected = scrubHomePrefixes(info, home) as Record<string, unknown>;
+    delete projected['root'];
+    delete projected['installedAt'];
+    delete projected['updatedAt'];
+    delete projected['manifestPath'];
+    return projected;
+  },
+  // Command `path`s point into the per-home managed copy; after the scrub
+  // the defs compare in full. Scope note: v1 answers from the session's
+  // creation-time snapshot of enabled commands, v2 from the app-global live
+  // view — parity holds here because the v1 session is created after the
+  // install (see the SDKRpcClientV2.listPluginCommands comment).
+  listPluginCommands: (defs: readonly PluginCommandDef[], home: HomePair): unknown =>
+    scrubHomePrefixes(defs, home),
   // Sessions: `createdAt` / `updatedAt` are per-run wall clock on both
   // engines (v1 reads fs birth/mtime off the session directory, v2 reads the
   // metadata stamps) — deleted, not compared. v1's store materializes the
@@ -259,6 +284,12 @@ const KNOWN_DIFFS = {
     tasks.map((task) => projectBackgroundTask(task)),
   detachBackgroundTask: (info: BackgroundTaskInfo | undefined): unknown =>
     info === undefined ? undefined : projectBackgroundTask(info),
+  // MCP startup metrics: `durationMs` is per-run wall clock on both engines
+  // (connect settle time) — projected away and asserted numeric at the call
+  // site. The empty-config session reports exactly 0 on both (no connectAll
+  // ever runs) and compares in full there.
+  getMcpStartupMetrics: (metrics: McpStartupMetrics): unknown =>
+    Object.keys(metrics).length === 1 ? {} : metrics,
   // Session export: `zipPath` is the caller-chosen output (different per
   // engine by construction) — deleted. `sessionDir` compares after the
   // home-prefix scrub (same `<home>/sessions/<workdir-key>/<id>` layout on
@@ -778,10 +809,338 @@ async function writeSkill(dir: string, name: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin parity
+//
+// The plugin methods live on the rpc client itself (KimiHarness has no
+// plugin surface), so plugin parity drives `SDKRpcClient` / `SDKRpcClientV2`
+// directly. Homes stay isolated (same rule as config parity), and both
+// engines install from ONE shared local source directory — zip-url / github
+// install forms need the network and are deliberately out of scope (pinned
+// in the migration tracker).
+// ---------------------------------------------------------------------------
+
+interface PluginParityPair {
+  readonly v1: SDKRpcClient;
+  readonly v2: SDKRpcClientV2;
+  readonly v1Home: HomePair;
+  readonly v2Home: HomePair;
+  readonly sourceDir: string;
+}
+
+const FIXTURE_PLUGIN_ID = 'parity-plugin';
+
+/**
+ * One fixture plugin exercising every shared PluginSummary/PluginInfo field:
+ * one discoverable skill, two MCP servers (stdio + http), a hook, a command
+ * file, a session-start entry, and the interface block.
+ */
+async function writeFixturePlugin(dir: string): Promise<void> {
+  await mkdir(join(dir, 'skills', 'parity-skill'), { recursive: true });
+  await mkdir(join(dir, 'commands'), { recursive: true });
+  await writeFile(
+    join(dir, 'kimi.plugin.json'),
+    JSON.stringify(
+      {
+        name: FIXTURE_PLUGIN_ID,
+        version: '1.2.3',
+        description: 'Plugin for the v1↔v2 parity test',
+        keywords: ['parity', 'test'],
+        author: { name: 'Parity Author', email: 'parity@example.com' },
+        homepage: 'https://example.com/parity-plugin',
+        license: 'MIT',
+        skills: ['./skills'],
+        sessionStart: { skill: 'parity-skill' },
+        mcpServers: {
+          'parity-stdio': {
+            transport: 'stdio',
+            command: 'parity-server',
+            args: ['--serve', '--verbose'],
+            env: { PARITY_TOKEN: 'fixture', PARITY_MODE: 'test' },
+          },
+          'parity-http': {
+            transport: 'http',
+            url: 'https://example.com/mcp',
+            headers: { 'X-Parity': '1' },
+          },
+        },
+        hooks: [{ event: 'SessionStart', command: 'echo parity' }],
+        commands: './commands',
+        interface: {
+          displayName: 'Parity Plugin',
+          shortDescription: 'Parity fixture',
+          developerName: 'Parity Author',
+          websiteURL: 'https://example.com/parity-plugin',
+        },
+      },
+      null,
+      2,
+    ),
+    'utf-8',
+  );
+  await writeFile(
+    join(dir, 'skills', 'parity-skill', 'SKILL.md'),
+    '---\nname: parity-skill\ndescription: Skill from the parity fixture plugin\n---\n\nParity skill body.\n',
+    'utf-8',
+  );
+  await writeFile(
+    join(dir, 'commands', 'parity-command.md'),
+    '---\nname: parity-command\ndescription: Run the parity command\n---\n\nBody of the parity command.\n',
+    'utf-8',
+  );
+}
+
+async function makePluginParityPair(): Promise<PluginParityPair> {
+  const v1HomeDir = await makeTempDir('kimi-sdk-parity-v1-home-');
+  const v2HomeDir = await makeTempDir('kimi-sdk-parity-v2-home-');
+  const sourceDir = await makeTempDir('kimi-sdk-parity-plugin-src-');
+  await writeFixturePlugin(sourceDir);
+  return {
+    v1: new SDKRpcClient({ homeDir: v1HomeDir, identity: TEST_IDENTITY }),
+    v2: new SDKRpcClientV2({ homeDir: v2HomeDir, identity: TEST_IDENTITY }),
+    v1Home: { raw: v1HomeDir, real: await realpath(v1HomeDir) },
+    v2Home: { raw: v2HomeDir, real: await realpath(v2HomeDir) },
+    sourceDir,
+  };
+}
+
+async function closePluginPair(pair: PluginParityPair): Promise<void> {
+  await pair.v1.close();
+  await pair.v2.close();
+}
+
+function installFixtureOnBoth(
+  pair: PluginParityPair,
+): Promise<[PluginSummary, PluginSummary]> {
+  return Promise.all([
+    pair.v1.installPlugin(pair.sourceDir),
+    pair.v2.installPlugin(pair.sourceDir),
+  ]);
+}
+
+describe('v1↔v2 plugin parity', () => {
+  it('installPlugin from a local directory returns the same summary', async () => {
+    const pair = await makePluginParityPair();
+    try {
+      const [v1Summary, v2Summary] = await installFixtureOnBoth(pair);
+      expect(normalize(v2Summary, 'id')).toEqual(normalize(v1Summary, 'id'));
+      expect(v1Summary).toMatchObject({
+        id: FIXTURE_PLUGIN_ID,
+        displayName: 'Parity Plugin',
+        version: '1.2.3',
+        enabled: true,
+        state: 'ok',
+        skillCount: 1,
+        mcpServerCount: 2,
+        enabledMcpServerCount: 2,
+        hookCount: 1,
+        commandCount: 1,
+        hasErrors: false,
+        source: 'local-path',
+      });
+    } finally {
+      await closePluginPair(pair);
+    }
+  });
+
+  it('listPlugins returns the same summaries after the same install', async () => {
+    const pair = await makePluginParityPair();
+    try {
+      await installFixtureOnBoth(pair);
+      const [v1Plugins, v2Plugins] = await Promise.all([
+        pair.v1.listPlugins(),
+        pair.v2.listPlugins(),
+      ]);
+      expect(normalize(v2Plugins, 'id')).toEqual(normalize(v1Plugins, 'id'));
+      expect(v1Plugins).toHaveLength(1);
+    } finally {
+      await closePluginPair(pair);
+    }
+  });
+
+  it('getPluginInfo returns the same info modulo per-home paths and install stamps', async () => {
+    const pair = await makePluginParityPair();
+    try {
+      await installFixtureOnBoth(pair);
+      const [v1Info, v2Info] = await Promise.all([
+        pair.v1.getPluginInfo(FIXTURE_PLUGIN_ID),
+        pair.v2.getPluginInfo(FIXTURE_PLUGIN_ID),
+      ]);
+      const project = KNOWN_DIFFS.getPluginInfo;
+      expect(project(v2Info, pair.v2Home)).toEqual(project(v1Info, pair.v1Home));
+      expect(v1Info.mcpServers.map((server) => server.name)).toEqual([
+        'parity-http',
+        'parity-stdio',
+      ]);
+    } finally {
+      await closePluginPair(pair);
+    }
+  });
+
+  it('setPluginEnabled toggles identically on both engines', async () => {
+    const pair = await makePluginParityPair();
+    try {
+      await installFixtureOnBoth(pair);
+      await Promise.all([
+        pair.v1.setPluginEnabled(FIXTURE_PLUGIN_ID, false),
+        pair.v2.setPluginEnabled(FIXTURE_PLUGIN_ID, false),
+      ]);
+      const [v1Disabled, v2Disabled] = await Promise.all([
+        pair.v1.listPlugins(),
+        pair.v2.listPlugins(),
+      ]);
+      expect(normalize(v2Disabled, 'id')).toEqual(normalize(v1Disabled, 'id'));
+      expect(v1Disabled[0]?.enabled).toBe(false);
+      await Promise.all([
+        pair.v1.setPluginEnabled(FIXTURE_PLUGIN_ID, true),
+        pair.v2.setPluginEnabled(FIXTURE_PLUGIN_ID, true),
+      ]);
+      const [v1Enabled, v2Enabled] = await Promise.all([
+        pair.v1.listPlugins(),
+        pair.v2.listPlugins(),
+      ]);
+      expect(normalize(v2Enabled, 'id')).toEqual(normalize(v1Enabled, 'id'));
+      expect(v1Enabled[0]?.enabled).toBe(true);
+    } finally {
+      await closePluginPair(pair);
+    }
+  });
+
+  it('setPluginMcpServerEnabled toggles one server identically on both engines', async () => {
+    const pair = await makePluginParityPair();
+    try {
+      await installFixtureOnBoth(pair);
+      await Promise.all([
+        pair.v1.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-stdio', false),
+        pair.v2.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-stdio', false),
+      ]);
+      const [v1Info, v2Info] = await Promise.all([
+        pair.v1.getPluginInfo(FIXTURE_PLUGIN_ID),
+        pair.v2.getPluginInfo(FIXTURE_PLUGIN_ID),
+      ]);
+      const project = KNOWN_DIFFS.getPluginInfo;
+      expect(project(v2Info, pair.v2Home)).toEqual(project(v1Info, pair.v1Home));
+      expect(v1Info.enabledMcpServerCount).toBe(1);
+      expect(v1Info.mcpServers.find((server) => server.name === 'parity-stdio')?.enabled).toBe(
+        false,
+      );
+    } finally {
+      await closePluginPair(pair);
+    }
+  });
+
+  it('removePlugin leaves both engines with an empty catalog', async () => {
+    const pair = await makePluginParityPair();
+    try {
+      await installFixtureOnBoth(pair);
+      await Promise.all([
+        pair.v1.removePlugin(FIXTURE_PLUGIN_ID),
+        pair.v2.removePlugin(FIXTURE_PLUGIN_ID),
+      ]);
+      const [v1Plugins, v2Plugins] = await Promise.all([
+        pair.v1.listPlugins(),
+        pair.v2.listPlugins(),
+      ]);
+      expect(v2Plugins).toEqual(v1Plugins);
+      expect(v1Plugins).toEqual([]);
+    } finally {
+      await closePluginPair(pair);
+    }
+  });
+
+  it('reloadPlugins reports no catalog change and re-materializes disk edits identically', async () => {
+    const pair = await makePluginParityPair();
+    try {
+      await installFixtureOnBoth(pair);
+      const [v1Reload, v2Reload] = await Promise.all([
+        pair.v1.reloadPlugins(),
+        pair.v2.reloadPlugins(),
+      ]);
+      expect(v2Reload).toEqual(v1Reload);
+      expect(v1Reload).toEqual({ added: [], removed: [], errors: [] });
+      // An out-of-band edit to the managed copy is picked up by the next
+      // reload on both engines (reload re-reads the manifest from disk).
+      for (const home of [pair.v1Home, pair.v2Home]) {
+        const manifestPath = join(
+          home.real,
+          'plugins',
+          'managed',
+          FIXTURE_PLUGIN_ID,
+          'kimi.plugin.json',
+        );
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { version: string };
+        manifest.version = '2.0.0';
+        await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+      }
+      const [v1Reloaded, v2Reloaded] = await Promise.all([
+        pair.v1.reloadPlugins(),
+        pair.v2.reloadPlugins(),
+      ]);
+      expect(v2Reloaded).toEqual(v1Reloaded);
+      const [v1Plugins, v2Plugins] = await Promise.all([
+        pair.v1.listPlugins(),
+        pair.v2.listPlugins(),
+      ]);
+      expect(normalize(v2Plugins, 'id')).toEqual(normalize(v1Plugins, 'id'));
+      expect(v1Plugins[0]?.version).toBe('2.0.0');
+    } finally {
+      await closePluginPair(pair);
+    }
+  });
+
+  it('listPluginCommands returns the same enabled commands', async () => {
+    const pair = await makePluginParityPair();
+    const workDir = await makeTempDir('kimi-sdk-parity-work-');
+    try {
+      await installFixtureOnBoth(pair);
+      // The v1 session connects the plugin's enabled MCP servers at creation;
+      // disable them first so the test stays offline (the fixture's http
+      // server URL is a real-looking host). Commands are unaffected. v1's
+      // plugin manager persists without a mutation queue (v2 serializes
+      // internally), so same-engine mutations stay sequential here.
+      await Promise.all([
+        (async () => {
+          await pair.v1.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-stdio', false);
+          await pair.v1.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-http', false);
+        })(),
+        (async () => {
+          await pair.v2.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-stdio', false);
+          await pair.v2.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-http', false);
+        })(),
+      ]);
+      // v1 answers from the session's creation-time snapshot, so the session
+      // must be created after the install; v2 ignores the sessionId (app-global
+      // live view).
+      const session = await pair.v1.createSession({ workDir });
+      try {
+        const [v1Commands, v2Commands] = await Promise.all([
+          pair.v1.listPluginCommands({ sessionId: session.id }),
+          pair.v2.listPluginCommands({ sessionId: session.id }),
+        ]);
+        const project = KNOWN_DIFFS.listPluginCommands;
+        expect(normalize(project(v2Commands, pair.v2Home), 'name')).toEqual(
+          normalize(project(v1Commands, pair.v1Home), 'name'),
+        );
+        expect(v1Commands).toHaveLength(1);
+        expect(v1Commands[0]).toMatchObject({
+          pluginId: FIXTURE_PLUGIN_ID,
+          name: 'parity-command',
+          description: 'Run the parity command',
+          body: 'Body of the parity command.',
+        });
+      } finally {
+        await pair.v1.closeSession({ sessionId: session.id });
+      }
+    } finally {
+      await closePluginPair(pair);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Session lifecycle parity
 //
 // The session methods are driven through `SDKRpcClient` / `SDKRpcClientV2`
-// directly (same rule as the config parity): isolated per-engine homes, one
+// directly (same rule as the plugin parity): isolated per-engine homes, one
 // SHARED workDir (the sessions live under each home; the workDir is only a
 // referenced path, so sharing it makes the workDir / additionalDirs /
 // configPath comparisons exact). Explicit session ids keep identity
@@ -2133,6 +2492,69 @@ describe('v1↔v2 agent interaction parity', () => {
     }
   });
 
+  it('activatePluginCommand activates and rejects identically', async () => {
+    const restoreEnv = scrubConfigEnv();
+    const pair = await makeSessionParityPair();
+    const sourceDir = await makeTempDir('kimi-sdk-parity-plugin-src-');
+    await writeFixturePlugin(sourceDir);
+    try {
+      await pair.v1.installPlugin(sourceDir);
+      await pair.v2.installPlugin(sourceDir);
+      // The v1 session connects the plugin's enabled MCP servers at
+      // creation; disable them first so the test stays offline (same rule
+      // as the plugin batch; same-engine mutations stay sequential).
+      await pair.v1.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-stdio', false);
+      await pair.v1.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-http', false);
+      await pair.v2.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-stdio', false);
+      await pair.v2.setPluginMcpServerEnabled(FIXTURE_PLUGIN_ID, 'parity-http', false);
+      // v1 resolves commands against the session's creation-time snapshot,
+      // so the session must be created after the install; v2 uses the
+      // app-global live view.
+      await createOnBoth(pair, { id: 'session_parity_agent_plugincmd' });
+      const input = { sessionId: 'session_parity_agent_plugincmd' } as const;
+      // An unknown command rejects with the same code and text.
+      const rejection = 'Plugin command "p:c" was not found';
+      await expect(
+        pair.v1.activatePluginCommand({ ...input, pluginId: 'p', commandName: 'c' }),
+      ).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      await expect(
+        pair.v1.activatePluginCommand({ ...input, pluginId: 'p', commandName: 'c' }),
+      ).rejects.toThrowError(rejection);
+      await expect(
+        pair.v2.activatePluginCommand({ ...input, pluginId: 'p', commandName: 'c' }),
+      ).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      await expect(
+        pair.v2.activatePluginCommand({ ...input, pluginId: 'p', commandName: 'c' }),
+      ).rejects.toThrowError(rejection);
+      // The known command activates and updates title/lastPrompt identically.
+      await Promise.all([
+        pair.v1.activatePluginCommand({
+          ...input,
+          pluginId: FIXTURE_PLUGIN_ID,
+          commandName: 'parity-command',
+        }),
+        pair.v2.activatePluginCommand({
+          ...input,
+          pluginId: FIXTURE_PLUGIN_ID,
+          commandName: 'parity-command',
+        }),
+      ]);
+      const project = KNOWN_DIFFS.listSessions;
+      const [v1List, v2List] = await Promise.all([
+        pair.v1.listSessions(),
+        pair.v2.listSessions(),
+      ]);
+      expect(normalize(project(v2List, pair.v2Home), 'id')).toEqual(
+        normalize(project(v1List, pair.v1Home), 'id'),
+      );
+      expect(v1List[0]?.lastPrompt).toBe('/parity-plugin:parity-command');
+      await settleTurns();
+    } finally {
+      await closeSessionPair(pair);
+      restoreEnv();
+    }
+  });
+
   it('generateAgentsMd rejects model-less with session.init_failed on both engines (pinned message gap)', async () => {
     const restoreEnv = scrubConfigEnv();
     // The success path spawns a real subagent LLM round (the /init brief),
@@ -2951,6 +3373,514 @@ describe('v1↔v2 print policy parity', () => {
       restoreEnv();
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// MCP parity. The global group drives isolated homes with the same mcp.json
+// fixture written into each (a write through one engine must not be observed
+// by the other mid-test); fixtures never declare reachable remote servers —
+// the OAuth success path needs a real authorization server (network) and is
+// registered as a provider boundary in the migration tracker, so only the
+// pre-network guards and the flowId bookkeeping are compared. The stdio
+// fixtures spawn local commands only.
+// ---------------------------------------------------------------------------
+
+const MCP_STDIO_FIXTURE = join(
+  import.meta.dirname,
+  '../../agent-core/test/mcp/fixtures/mock-stdio-server.mjs',
+);
+
+interface GlobalMcpParityPair {
+  readonly v1: SDKRpcClient;
+  readonly v2: SDKRpcClientV2;
+  readonly v1Home: HomePair;
+  readonly v2Home: HomePair;
+  readonly v1HomeDir: string;
+  readonly v2HomeDir: string;
+}
+
+async function writeMcpJson(homeDir: string, value: unknown): Promise<void> {
+  await writeFile(join(homeDir, 'mcp.json'), JSON.stringify(value), 'utf-8');
+}
+
+async function makeGlobalMcpParityPair(mcpJson?: unknown): Promise<GlobalMcpParityPair> {
+  const v1HomeDir = await makeTempDir('kimi-sdk-parity-v1-home-');
+  const v2HomeDir = await makeTempDir('kimi-sdk-parity-v2-home-');
+  if (mcpJson !== undefined) {
+    await writeMcpJson(v1HomeDir, mcpJson);
+    await writeMcpJson(v2HomeDir, mcpJson);
+  }
+  return {
+    v1: new SDKRpcClient({ homeDir: v1HomeDir, identity: TEST_IDENTITY }),
+    v2: new SDKRpcClientV2({ homeDir: v2HomeDir, identity: TEST_IDENTITY }),
+    v1Home: { raw: v1HomeDir, real: await realpath(v1HomeDir) },
+    v2Home: { raw: v2HomeDir, real: await realpath(v2HomeDir) },
+    v1HomeDir,
+    v2HomeDir,
+  };
+}
+
+async function closeGlobalMcpPair(pair: GlobalMcpParityPair): Promise<void> {
+  await pair.v1.close();
+  await pair.v2.close();
+}
+
+/** The rejection of a call, or a test failure when the call resolves. */
+async function captureRejection(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  expect.unreachable('expected the call to reject');
+}
+
+/**
+ * Both engines must reject with the same code and the same message (home
+ * prefixes scrubbed — the file-store errors embed the mcp.json path).
+ */
+async function expectSameMcpRejection(
+  pair: GlobalMcpParityPair,
+  v1Call: (client: SDKRpcClient) => Promise<unknown>,
+  v2Call: (client: SDKRpcClientV2) => Promise<unknown>,
+): Promise<void> {
+  const [v1Error, v2Error] = await Promise.all([
+    captureRejection(v1Call(pair.v1)),
+    captureRejection(v2Call(pair.v2)),
+  ]);
+  const payload = (error: unknown): unknown => {
+    const err = error as { code?: unknown; message?: unknown };
+    return { code: err.code ?? null, message: String(err.message ?? error) };
+  };
+  expect(scrubHomePrefixes(payload(v2Error), pair.v2Home)).toEqual(
+    scrubHomePrefixes(payload(v1Error), pair.v1Home),
+  );
+}
+
+describe('v1↔v2 global MCP parity', () => {
+  it('CRUD round-trips identically and writes byte-identical mcp.json files', async () => {
+    const pair = await makeGlobalMcpParityPair({
+      custom: { keep: true },
+      mcpServers: {
+        'existing-stdio': { command: 'existing-command' },
+        'existing-http': {
+          transport: 'http',
+          url: 'https://example.test/mcp',
+          auth: 'oauth',
+        },
+      },
+    });
+    try {
+      const [v1Initial, v2Initial] = await Promise.all([
+        pair.v1.listGlobalMcpServers(),
+        pair.v2.listGlobalMcpServers(),
+      ]);
+      expect(normalize(v2Initial, 'name')).toEqual(normalize(v1Initial, 'name'));
+      // The transport-less stdio entry parses with `transport: 'stdio'`
+      // injected; the `auth: 'oauth'` marker survives the round-trip.
+      expect(v1Initial).toEqual([
+        {
+          name: 'existing-stdio',
+          transport: 'stdio',
+          command: 'existing-command',
+        },
+        {
+          name: 'existing-http',
+          transport: 'http',
+          url: 'https://example.test/mcp',
+          auth: 'oauth',
+        },
+      ]);
+
+      const added: McpServerConfig = {
+        name: 'added',
+        transport: 'stdio',
+        command: 'added-command',
+        args: ['--flag'],
+        enabledTools: ['echo'],
+      };
+      const [v1Added, v2Added] = await Promise.all([
+        pair.v1.addGlobalMcpServer(added),
+        pair.v2.addGlobalMcpServer(added),
+      ]);
+      expect(normalize(v2Added, 'name')).toEqual(normalize(v1Added, 'name'));
+
+      const updated: McpServerConfig = {
+        name: 'existing-http',
+        transport: 'sse',
+        url: 'https://example.test/sse',
+        headers: { 'x-fixture': 'yes' },
+      };
+      const [v1Updated, v2Updated] = await Promise.all([
+        pair.v1.updateGlobalMcpServer(updated),
+        pair.v2.updateGlobalMcpServer(updated),
+      ]);
+      expect(normalize(v2Updated, 'name')).toEqual(normalize(v1Updated, 'name'));
+
+      const [v1Removed, v2Removed] = await Promise.all([
+        pair.v1.removeGlobalMcpServer('existing-stdio'),
+        pair.v2.removeGlobalMcpServer('existing-stdio'),
+      ]);
+      expect(normalize(v2Removed, 'name')).toEqual(normalize(v1Removed, 'name'));
+      expect(v1Removed.map((server) => server.name)).toEqual(['existing-http', 'added']);
+
+      // The persisted files are byte-identical across the engines (same
+      // formatting, unrelated top-level content preserved).
+      const [v1File, v2File] = await Promise.all([
+        readFile(join(pair.v1HomeDir, 'mcp.json'), 'utf-8'),
+        readFile(join(pair.v2HomeDir, 'mcp.json'), 'utf-8'),
+      ]);
+      expect(v2File).toBe(v1File);
+    } finally {
+      await closeGlobalMcpPair(pair);
+    }
+  });
+
+  it('CRUD rejections match on both engines', async () => {
+    const pair = await makeGlobalMcpParityPair({
+      mcpServers: { existing: { command: 'existing-command' } },
+    });
+    try {
+      await expectSameMcpRejection(
+        pair,
+        (client) =>
+          client.addGlobalMcpServer({
+            name: 'existing',
+            transport: 'stdio',
+            command: 'duplicate',
+          }),
+        (client) =>
+          client.addGlobalMcpServer({
+            name: 'existing',
+            transport: 'stdio',
+            command: 'duplicate',
+          }),
+      );
+      await expectSameMcpRejection(
+        pair,
+        (client) =>
+          client.updateGlobalMcpServer({ name: 'missing', transport: 'stdio', command: 'x' }),
+        (client) =>
+          client.updateGlobalMcpServer({ name: 'missing', transport: 'stdio', command: 'x' }),
+      );
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.addGlobalMcpServer({ name: '   ', transport: 'stdio', command: 'x' }),
+        (client) => client.addGlobalMcpServer({ name: '   ', transport: 'stdio', command: 'x' }),
+      );
+      // Schema-invalid entry (neither command nor url): same schema on both
+      // sides, so the config.invalid message matches too.
+      await expectSameMcpRejection(
+        pair,
+        (client) =>
+          client.addGlobalMcpServer({ name: 'invalid' } as never),
+        (client) =>
+          client.addGlobalMcpServer({ name: 'invalid' } as never),
+      );
+      // Removing an unknown name is NOT an error on either engine — the
+      // unchanged list comes back.
+      const [v1Removed, v2Removed] = await Promise.all([
+        pair.v1.removeGlobalMcpServer('missing'),
+        pair.v2.removeGlobalMcpServer('missing'),
+      ]);
+      expect(normalize(v2Removed, 'name')).toEqual(normalize(v1Removed, 'name'));
+      expect(v1Removed).toHaveLength(1);
+    } finally {
+      await closeGlobalMcpPair(pair);
+    }
+  });
+
+  it('a malformed mcp.json rejects every read with the same config.invalid', async () => {
+    const pair = await makeGlobalMcpParityPair();
+    await writeFile(join(pair.v1HomeDir, 'mcp.json'), '{ not valid json', 'utf-8');
+    await writeFile(join(pair.v2HomeDir, 'mcp.json'), '{ not valid json', 'utf-8');
+    try {
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.listGlobalMcpServers(),
+        (client) => client.listGlobalMcpServers(),
+      );
+    } finally {
+      await closeGlobalMcpPair(pair);
+    }
+  });
+
+  it('OAuth guards and flow bookkeeping match without contacting a server', async () => {
+    const pair = await makeGlobalMcpParityPair({
+      mcpServers: {
+        stdio: { command: 'local-command' },
+        'bearer-remote': {
+          transport: 'http',
+          url: 'https://example.test/mcp',
+          bearerTokenEnvVar: 'FIXTURE_MCP_TOKEN',
+        },
+        'headers-remote': {
+          transport: 'http',
+          url: 'https://example.test/mcp',
+          headers: { authorization: 'Bearer static' },
+        },
+        'plain-remote': { transport: 'http', url: 'https://example.test/mcp' },
+      },
+    });
+    try {
+      // begin: unknown server / non-remote / static token / static headers
+      // all reject before any network I/O.
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.beginGlobalMcpServerAuth('missing'),
+        (client) => client.beginGlobalMcpServerAuth('missing'),
+      );
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.beginGlobalMcpServerAuth('stdio'),
+        (client) => client.beginGlobalMcpServerAuth('stdio'),
+      );
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.beginGlobalMcpServerAuth('bearer-remote'),
+        (client) => client.beginGlobalMcpServerAuth('bearer-remote'),
+      );
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.beginGlobalMcpServerAuth('headers-remote'),
+        (client) => client.beginGlobalMcpServerAuth('headers-remote'),
+      );
+      // reset: unknown / non-remote reject; a plain remote invalidates
+      // (no stored credentials — a no-op on both engines).
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.resetGlobalMcpServerAuth('missing'),
+        (client) => client.resetGlobalMcpServerAuth('missing'),
+      );
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.resetGlobalMcpServerAuth('stdio'),
+        (client) => client.resetGlobalMcpServerAuth('stdio'),
+      );
+      await Promise.all([
+        pair.v1.resetGlobalMcpServerAuth('plain-remote'),
+        pair.v2.resetGlobalMcpServerAuth('plain-remote'),
+      ]);
+      // Flow bookkeeping: an unknown flowId rejects on complete and is a
+      // silent no-op on cancel, on both engines.
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.completeGlobalMcpServerAuth({ flowId: 'flow_missing' }),
+        (client) => client.completeGlobalMcpServerAuth({ flowId: 'flow_missing' }),
+      );
+      await Promise.all([
+        pair.v1.cancelGlobalMcpServerAuth('flow_missing'),
+        pair.v2.cancelGlobalMcpServerAuth('flow_missing'),
+      ]);
+    } finally {
+      await closeGlobalMcpPair(pair);
+    }
+  });
+
+  it('testGlobalMcpServer reports the same probe results', async () => {
+    const restoreEnv = scrubConfigEnv();
+    const pair = await makeGlobalMcpParityPair({
+      mcpServers: {
+        working: { command: process.execPath, args: [MCP_STDIO_FIXTURE] },
+        missing: { command: '/definitely/not/a/real/mcp-executable' },
+      },
+    });
+    try {
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.testGlobalMcpServer('unknown-server'),
+        (client) => client.testGlobalMcpServer('unknown-server'),
+      );
+      const [v1Working, v2Working] = await Promise.all([
+        pair.v1.testGlobalMcpServer('working'),
+        pair.v2.testGlobalMcpServer('working'),
+      ]);
+      expect(v2Working).toEqual(v1Working);
+      expect(v1Working.success).toBe(true);
+      expect(v1Working.output).toContain('Available tools: 3');
+      const [v1Missing, v2Missing] = await Promise.all([
+        pair.v1.testGlobalMcpServer('missing'),
+        pair.v2.testGlobalMcpServer('missing'),
+      ]);
+      expect(v2Missing).toEqual(v1Missing);
+      expect(v1Missing.success).toBe(false);
+      expect(v1Missing.output).toMatch(/ENOENT|not found|spawn/i);
+    } finally {
+      await closeGlobalMcpPair(pair);
+      restoreEnv();
+    }
+  }, 20_000);
+});
+
+type McpServerList = Awaited<ReturnType<SDKRpcClientBase['listMcpServers']>>;
+
+/**
+ * List MCP servers on both engines once the initial connect has settled.
+ * v1 connects in the background after create resolves while v2 awaits the
+ * initial connect inside create, so an immediate list can catch either side
+ * still pending under load; poll until no server reports a transient status.
+ */
+async function listMcpServersWhenSettled(
+  pair: SessionParityPair,
+  input: { readonly sessionId: string },
+  timeoutMs = 10_000,
+): Promise<readonly [McpServerList, McpServerList]> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const lists = await Promise.all([
+      pair.v1.listMcpServers(input),
+      pair.v2.listMcpServers(input),
+    ] as const);
+    const settled = lists.every((servers) =>
+      servers.every((server) => server.status !== 'pending'),
+    );
+    if (settled || Date.now() >= deadline) return lists;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+describe('v1↔v2 session MCP parity', () => {
+  /** working (connects, 3 tools) + broken (fails fast) + off (disabled). */
+  const SESSION_MCP_FIXTURE = {
+    mcpServers: {
+      working: { command: process.execPath, args: [MCP_STDIO_FIXTURE] },
+      broken: { command: '/definitely/not/a/real/mcp-executable' },
+      off: { command: process.execPath, args: [MCP_STDIO_FIXTURE], enabled: false },
+    },
+  };
+
+  async function makeSessionMcpPair(mcpJson?: unknown): Promise<SessionParityPair> {
+    const pair = await makeSessionParityPair();
+    if (mcpJson !== undefined) {
+      await writeMcpJson(pair.v1Home.raw, mcpJson);
+      await writeMcpJson(pair.v2Home.raw, mcpJson);
+    }
+    return pair;
+  }
+
+  it('listMcpServers reports the same entries after the initial connect', async () => {
+    const restoreEnv = scrubConfigEnv();
+    const pair = await makeSessionMcpPair(SESSION_MCP_FIXTURE);
+    try {
+      await createOnBoth(pair, { id: 'session_parity_mcp_list' });
+      const input = { sessionId: 'session_parity_mcp_list' } as const;
+      const [v1Servers, v2Servers] = await listMcpServersWhenSettled(pair, input);
+      expect(normalize(v2Servers, 'name')).toEqual(normalize(v1Servers, 'name'));
+      const byName = new Map(v1Servers.map((server) => [server.name, server]));
+      expect(byName.get('working')).toMatchObject({
+        transport: 'stdio',
+        status: 'connected',
+        toolCount: 3,
+      });
+      expect(byName.get('broken')).toMatchObject({ status: 'failed', toolCount: 0 });
+      expect(byName.get('off')).toMatchObject({ status: 'disabled', toolCount: 0 });
+      // An empty-config session lists nothing on either engine.
+      const emptyPair = await makeSessionMcpPair();
+      try {
+        await createOnBoth(emptyPair, { id: 'session_parity_mcp_empty' });
+        const emptyInput = { sessionId: 'session_parity_mcp_empty' } as const;
+        const [v1Empty, v2Empty] = await Promise.all([
+          emptyPair.v1.listMcpServers(emptyInput),
+          emptyPair.v2.listMcpServers(emptyInput),
+        ]);
+        expect(v2Empty).toEqual(v1Empty);
+        expect(v1Empty).toEqual([]);
+        // Session-level reads require a live session on both engines.
+        await expect(
+          emptyPair.v1.listMcpServers({ sessionId: 'session_missing' }),
+        ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+        await expect(
+          emptyPair.v2.listMcpServers({ sessionId: 'session_missing' }),
+        ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+      } finally {
+        await closeSessionPair(emptyPair);
+      }
+    } finally {
+      await closeSessionPair(pair);
+      restoreEnv();
+    }
+  }, 20_000);
+
+  it('getMcpStartupMetrics agrees, exactly 0 without servers', async () => {
+    const restoreEnv = scrubConfigEnv();
+    const pair = await makeSessionMcpPair(SESSION_MCP_FIXTURE);
+    try {
+      await createOnBoth(pair, { id: 'session_parity_mcp_metrics' });
+      const input = { sessionId: 'session_parity_mcp_metrics' } as const;
+      const [v1Metrics, v2Metrics] = await Promise.all([
+        pair.v1.getMcpStartupMetrics(input),
+        pair.v2.getMcpStartupMetrics(input),
+      ]);
+      const project = KNOWN_DIFFS.getMcpStartupMetrics;
+      expect(project(v2Metrics)).toEqual(project(v1Metrics));
+      expect(v1Metrics.durationMs).toBeGreaterThanOrEqual(0);
+      expect(v2Metrics.durationMs).toBeGreaterThanOrEqual(0);
+
+      const emptyPair = await makeSessionMcpPair();
+      try {
+        await createOnBoth(emptyPair, { id: 'session_parity_mcp_metrics_empty' });
+        const emptyInput = { sessionId: 'session_parity_mcp_metrics_empty' } as const;
+        const [v1Empty, v2Empty] = await Promise.all([
+          emptyPair.v1.getMcpStartupMetrics(emptyInput),
+          emptyPair.v2.getMcpStartupMetrics(emptyInput),
+        ]);
+        expect(v2Empty).toEqual(v1Empty);
+        expect(v1Empty).toEqual({ durationMs: 0 });
+        await expect(
+          emptyPair.v1.getMcpStartupMetrics({ sessionId: 'session_missing' }),
+        ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+        await expect(
+          emptyPair.v2.getMcpStartupMetrics({ sessionId: 'session_missing' }),
+        ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+      } finally {
+        await closeSessionPair(emptyPair);
+      }
+    } finally {
+      await closeSessionPair(pair);
+      restoreEnv();
+    }
+  }, 20_000);
+
+  it('reconnectMcpServer rejects and reconnects identically', async () => {
+    const restoreEnv = scrubConfigEnv();
+    const pair = await makeSessionMcpPair(SESSION_MCP_FIXTURE);
+    try {
+      await createOnBoth(pair, { id: 'session_parity_mcp_reconnect' });
+      const input = { sessionId: 'session_parity_mcp_reconnect' } as const;
+      const [v1Unknown, v2Unknown] = await Promise.all([
+        captureRejection(pair.v1.reconnectMcpServer({ ...input, name: 'missing' })),
+        captureRejection(pair.v2.reconnectMcpServer({ ...input, name: 'missing' })),
+      ]);
+      expect(v2Unknown).toMatchObject({ code: 'mcp.server_not_found' });
+      expect((v1Unknown as Error).message).toBe((v2Unknown as Error).message);
+      const [v1Disabled, v2Disabled] = await Promise.all([
+        captureRejection(pair.v1.reconnectMcpServer({ ...input, name: 'off' })),
+        captureRejection(pair.v2.reconnectMcpServer({ ...input, name: 'off' })),
+      ]);
+      expect(v2Disabled).toMatchObject({ code: 'mcp.server_disabled' });
+      expect((v1Disabled as Error).message).toBe((v2Disabled as Error).message);
+      // Reconnecting the working server re-settles as connected with its
+      // tools rediscovered, on both engines.
+      await Promise.all([
+        pair.v1.reconnectMcpServer({ ...input, name: 'working' }),
+        pair.v2.reconnectMcpServer({ ...input, name: 'working' }),
+      ]);
+      const [v1Servers, v2Servers] = await Promise.all([
+        pair.v1.listMcpServers(input),
+        pair.v2.listMcpServers(input),
+      ]);
+      expect(normalize(v2Servers, 'name')).toEqual(normalize(v1Servers, 'name'));
+      await expect(
+        pair.v1.reconnectMcpServer({ sessionId: 'session_missing', name: 'working' }),
+      ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+      await expect(
+        pair.v2.reconnectMcpServer({ sessionId: 'session_missing', name: 'working' }),
+      ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+    } finally {
+      await closeSessionPair(pair);
+      restoreEnv();
+    }
+  }, 20_000);
 });
 
 // ---------------------------------------------------------------------------

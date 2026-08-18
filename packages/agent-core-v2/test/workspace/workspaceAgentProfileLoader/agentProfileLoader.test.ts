@@ -1,12 +1,12 @@
 /**
  * Scenario: agent-profile loaders + session catalog — the Contribution /
  * Registry / Catalog extension point end to end. Exercises the real loader
- * services (builtin / user / workspace / extra / explicit), the
+ * services (builtin / user / plugin / workspace / extra / explicit), the
  * App-scope `AgentProfileRegistryService`, and the Session-scope
  * `SessionAgentProfileCatalogService` as directly-constructed instances (no DI
  * scope host) against real temp directories: source-priority merge, the
- * builtin-override rule, explicit fatal semantics, config / fs-watch driven
- * reloads, and SYSTEM.md interplay. Run:
+ * builtin-override rule, explicit fatal semantics, config / plugin-reload /
+ * fs-watch driven reloads, and SYSTEM.md interplay. Run:
  * `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
  * test/workspace/workspaceAgentProfileLoader/agentProfileLoader.test.ts`.
  */
@@ -17,10 +17,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import type { ILogService } from '#/_base/log/log';
 import { EXTRA_AGENT_DIRS_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import { UserAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoaderService';
+import type { PluginAgentRoot } from '#/app/plugin/types';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   normalizeAgentProfile,
@@ -34,6 +35,9 @@ import {
 } from '#/app/agentProfileCatalog/contribution';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IConfigService } from '#/app/config/config';
+import { IPluginService } from '#/app/plugin/plugin';
+import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
+import type { ReloadSummary } from '#/app/plugin/types';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
@@ -109,6 +113,7 @@ function fsWatchStub(): IHostFsWatchService {
   return {
     _serviceBrand: undefined,
     watch: (): IHostFsWatchHandle => ({
+      ready: Promise.resolve(),
       onDidChange: Event.None as Event<HostFsChange>,
       dispose: () => {},
     }),
@@ -168,6 +173,33 @@ function logStub(warnings?: string[]): ILogService {
   } as unknown as ILogService;
 }
 
+function pluginStub(
+  agentRoots: readonly PluginAgentRoot[] = [],
+  reloadEmitter?: Emitter<ReloadSummary>,
+): IPluginService {
+  return {
+    _serviceBrand: undefined,
+    onDidReload: reloadEmitter !== undefined ? reloadEmitter.event : () => ({ dispose: () => {} }),
+    listPlugins: async () => [],
+    installPlugin: async () => ({ id: '' }) as never,
+    setPluginEnabled: async () => {},
+    setPluginMcpServerEnabled: async () => {},
+    removePlugin: async () => {},
+    reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
+    getPluginInfo: async () => {
+      throw new Error('getPluginInfo is not used by these tests');
+    },
+    listPluginCommands: async () => [],
+    checkUpdates: async () => [],
+    pluginSkillRoots: async () => [],
+    pluginAgentRoots: async () => agentRoots,
+    enabledSessionStarts: async () => [],
+    enabledSystemPrompts: async () => [],
+    enabledMcpServers: async () => ({}),
+    enabledHooks: async () => [],
+  };
+}
+
 function waitForEvent(event: Event<unknown>): Promise<void> {
   return new Promise((resolve) => {
     const disposable = event(() => {
@@ -203,6 +235,8 @@ function failingReaddirFs(
 interface StackOptions {
   readonly extraAgentDirs?: readonly string[];
   readonly explicitFiles?: readonly string[];
+  readonly pluginAgentRoots?: readonly PluginAgentRoot[];
+  readonly pluginReloadEmitter?: Emitter<ReloadSummary>;
   readonly hostFs?: HostFileSystem;
   readonly fsWatch?: IHostFsWatchService;
 }
@@ -232,6 +266,14 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     hostFs,
     log,
     builtinLoader,
+    registry,
+    workspaceContext,
+  );
+  const pluginLoader = new PluginAgentProfileLoaderService(
+    pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter),
+    hostFs,
+    log,
+    userLoader,
     registry,
     workspaceContext,
   );
@@ -270,6 +312,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     registry,
     builtinLoader,
     userLoader,
+    pluginLoader,
     workspaceLoader,
     extraLoader,
     explicitLoader,
@@ -280,6 +323,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     async ready(): Promise<void> {
       await Promise.all([
         userLoader.ready,
+        pluginLoader.ready,
         workspaceLoader.ready,
         extraLoader.ready,
         explicitLoader.ready,
@@ -292,6 +336,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
         explicitLoader,
         extraLoader,
         workspaceLoader,
+        pluginLoader,
         userLoader,
         builtinLoader,
         registry,
@@ -393,6 +438,51 @@ describe('agent profile loaders + session catalog', () => {
           expect(stack.catalog.get('shared')?.description).toBe('from explicit');
           expect(stack.catalog.get('user-extra')?.description).toBe('from extra');
           expect(stack.catalog.inspect('shared')?.sourceId).toBe('explicit');
+        },
+      );
+    });
+  });
+
+  it('merges plugin agents below user; user wins on name collision', async () => {
+    await withFixture(async (fixture) => {
+      const pluginAgentsDir = join(fixture.extraDir, 'plugin-agents');
+      await writeAgent(pluginAgentsDir, 'shared.md', agentMd('shared', 'from plugin'));
+      await writeAgent(pluginAgentsDir, 'plugin-only.md', agentMd('plugin-only', 'from plugin'));
+      await writeAgent(join(fixture.homeDir, 'agents'), 'shared.md', agentMd('shared', 'from user'));
+      await withStack(
+        fixture,
+        { pluginAgentRoots: [{ path: pluginAgentsDir, source: 'plugin' }] },
+        async (stack) => {
+          await stack.ready();
+
+          expect(stack.catalog.get('shared')?.description).toBe('from user');
+          expect(stack.catalog.get('plugin-only')?.description).toBe('from plugin');
+        },
+      );
+    });
+  });
+
+  it('reloads the plugin loader when plugins reload', async () => {
+    await withFixture(async (fixture) => {
+      const pluginAgentsDir = join(fixture.extraDir, 'plugin-agents');
+      await mkdir(pluginAgentsDir, { recursive: true });
+      const reloadEmitter = new Emitter<ReloadSummary>();
+      await withStack(
+        fixture,
+        {
+          pluginAgentRoots: [{ path: pluginAgentsDir, source: 'plugin' }],
+          pluginReloadEmitter: reloadEmitter,
+        },
+        async (stack) => {
+          await stack.ready();
+          expect(stack.catalog.get('late')).toBeUndefined();
+
+          await writeAgent(pluginAgentsDir, 'late.md', agentMd('late', 'late plugin agent'));
+          const changed = waitForEvent(stack.catalog.onDidChange);
+          reloadEmitter.fire({ added: [], removed: [], errors: [] });
+          await changed;
+
+          expect(stack.catalog.get('late')?.description).toBe('late plugin agent');
         },
       );
     });

@@ -117,7 +117,7 @@ import {
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
-
+import { IPluginService } from '#/app/plugin/plugin';
 import type { ResolvedAgentProfile, SystemPromptContext } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
@@ -185,7 +185,7 @@ function describeInactiveToolPattern(
   }
 }
 
-
+export const PLUGIN_SECTIONS_MAX_BYTES = 64 * 1024;
 
 export const profileActiveToolNamesOverlayKey = defineState<readonly string[] | undefined>(
   'profile.activeToolNamesOverlay',
@@ -203,7 +203,10 @@ export const profileEmittedToolPatternWarningsKey = defineState<Set<string>>(
   'profile.emittedToolPatternWarnings',
   () => new Set(),
 );
-
+export const profileEmittedPluginBudgetWarningsKey = defineState<Set<string>>(
+  'profile.emittedPluginBudgetWarnings',
+  () => new Set(),
+);
 
 export class AgentProfileService extends Disposable implements IAgentProfileService {
   declare readonly _serviceBrand: undefined;
@@ -241,7 +244,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IBuiltinAgentProfileLoader private readonly builtinProfiles: IBuiltinAgentProfileLoader,
     @IAgentStateService private readonly states: IAgentStateService,
-
+    @IPluginService private readonly plugins: IPluginService,
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @IAgentAgentsMdReminderService private readonly agentsMdReminder: IAgentAgentsMdReminderService,
   ) {
@@ -250,7 +253,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.states.register(profileAgentsMdWarningKey);
     this.states.register(profileEmittedThinkingEffortWarningsKey);
     this.states.register(profileEmittedToolPatternWarningsKey);
-
+    this.states.register(profileEmittedPluginBudgetWarningsKey);
     this.configure({});
     this._register(
       this.sessionToolPolicy.onDidChange((event) => {
@@ -303,7 +306,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return this.states.get(profileEmittedToolPatternWarningsKey);
   }
 
-
+  private get emittedPluginBudgetWarnings(): Set<string> {
+    return this.states.get(profileEmittedPluginBudgetWarningsKey);
+  }
 
   configure(options: ProfileServiceOptions): void {
     this.optionsValue = {
@@ -922,7 +927,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       },
     );
     const skills = await this.resolveSkillListing();
-      const pluginSections = '';
+    const pluginSections = await this.resolvePluginSections();
     const now = this.clock.now();
     const timeZone = this.clock.timeZone();
     return {
@@ -976,7 +981,36 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
   }
 
-
+  private async resolvePluginSections(): Promise<string> {
+    const sections = await this.plugins.enabledSystemPrompts();
+    const parts: string[] = [];
+    const skipped: string[] = [];
+    let totalBytes = 0;
+    for (const section of sections) {
+      const block = `<!-- From: plugin ${section.pluginId} -->\n${section.content}`;
+      const bytes = Buffer.byteLength(block, 'utf8');
+      if (totalBytes + bytes > PLUGIN_SECTIONS_MAX_BYTES) {
+        skipped.push(section.pluginId);
+        continue;
+      }
+      totalBytes += bytes;
+      parts.push(block);
+    }
+    if (skipped.length > 0) {
+      const newlySkipped = skipped.filter((id) => !this.emittedPluginBudgetWarnings.has(id));
+      if (newlySkipped.length > 0) {
+        for (const id of newlySkipped) this.emittedPluginBudgetWarnings.add(id);
+        this.eventBus.publish({
+          type: 'warning',
+          message:
+            `Plugin system-prompt contributions from ${newlySkipped.map((id) => `"${id}"`).join(', ')} ` +
+            `were skipped: the aggregate ${PLUGIN_SECTIONS_MAX_BYTES / 1024} KB budget is exhausted.`,
+          code: 'plugin-sections-oversized',
+        });
+      }
+    }
+    return parts.join('\n\n');
+  }
 }
 
 registerScopedService(

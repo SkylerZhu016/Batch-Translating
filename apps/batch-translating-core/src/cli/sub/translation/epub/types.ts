@@ -19,7 +19,7 @@ export interface EpubZipEntry {
   readonly index: number;
   readonly path: string;
   readonly directory: boolean;
-  readonly compressionMethod: 0 | 8 | number;
+  readonly compressionMethod: number;
   readonly compressedSize: number;
   readonly uncompressedSize: number;
   readonly crc32: string;

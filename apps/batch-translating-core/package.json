@@ -1,5 +1,5 @@
 {
-  "name": "@moonshot-ai/kimi-code",
+  "name": "@batch-translating/core",
   "version": "0.32.0",
   "description": "Batch Translating CLI — 批量翻译引擎（基于 Kimi Code 二改）",
   "license": "MIT",
@@ -18,13 +18,11 @@
     "ai"
   ],
   "bin": {
-    "kimi": "dist/main.mjs"
+    "batch-translating": "dist/main.mjs"
   },
   "files": [
     "dist",
     "dist-web",
-    "scripts/postinstall.mjs",
-    "scripts/postinstall",
     "scripts/translation-launcher",
     "README.batch-translating.md"
   ],
@@ -46,7 +44,7 @@
     "release:native:resolve": "node scripts/native/resolve-release.mjs",
     "test:native:smoke": "node scripts/native/smoke.mjs",
     "dev:cli-only": "tsx --import ../../build/register-raw-text-loader.mjs ./src/main.ts",
-    "dev:server": "KIMI_CODE_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --debug-endpoints",
+    "dev:server": "node scripts/dev-server-restart.mjs --debug-endpoints",
     "dev:kap-server": "KIMI_CODE_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --debug-endpoints",
     "dev:kap-server:multi": "KIMI_CODE_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --debug-endpoints",
     "dev:server:restart": "node scripts/dev-server-restart.mjs",
@@ -55,8 +53,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm -w run build:packages && vitest run",
     "e2e": "pnpm -w run build:packages && KIMI_E2E=1 vitest run test/e2e",
-    "e2e:real": "pnpm -w run build:packages && KIMI_E2E_REAL=1 vitest run test/e2e/real-llm-smoke.e2e.test.ts",
-    "postinstall": "node scripts/postinstall.mjs"
+    "e2e:real": "pnpm -w run build:packages && KIMI_E2E_REAL=1 vitest run test/e2e/real-llm-smoke.e2e.test.ts"
   },
   "devDependencies": {
     "@moonshot-ai/agent-core-v2": "workspace:^",
@@ -64,7 +61,7 @@
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
     "@moonshot-ai/kimi-code-sdk": "workspace:^",
     "@moonshot-ai/kimi-telemetry": "workspace:^",
-    "@moonshot-ai/kimi-web": "workspace:^",
+    "@batch-translating/web": "workspace:^",
     "@moonshot-ai/minidb": "workspace:^",
     "@types/semver": "^7.7.0",
     "@types/yazl": "^2.4.6",

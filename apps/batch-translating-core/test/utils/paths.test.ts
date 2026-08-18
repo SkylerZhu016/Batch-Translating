@@ -16,6 +16,7 @@ import {
 const originalEnv = { ...process.env };
 
 beforeEach(() => {
+  delete process.env['BATCH_TRANSLATING_HOME'];
   delete process.env['KIMI_CODE_HOME'];
 });
 
@@ -36,6 +37,24 @@ describe('getDataDir', () => {
   it('returns KIMI_CODE_HOME even if it is a relative path', () => {
     process.env['KIMI_CODE_HOME'] = 'relative/path';
     expect(getDataDir()).toBe('relative/path');
+  });
+
+  it('prefers a non-empty BATCH_TRANSLATING_HOME over KIMI_CODE_HOME', () => {
+    process.env['BATCH_TRANSLATING_HOME'] = '/batch-home';
+    process.env['KIMI_CODE_HOME'] = '/kimi-home';
+    expect(getDataDir()).toBe('/batch-home');
+  });
+
+  it('falls back to KIMI_CODE_HOME when BATCH_TRANSLATING_HOME is empty', () => {
+    process.env['BATCH_TRANSLATING_HOME'] = '';
+    process.env['KIMI_CODE_HOME'] = '/kimi-home';
+    expect(getDataDir()).toBe('/kimi-home');
+  });
+
+  it('uses the default when both home environment variables are empty', () => {
+    process.env['BATCH_TRANSLATING_HOME'] = '';
+    process.env['KIMI_CODE_HOME'] = '';
+    expect(getDataDir()).toBe(join(homedir(), '.batch-translating'));
   });
 });
 

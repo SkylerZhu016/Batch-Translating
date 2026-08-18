@@ -13,12 +13,14 @@
  * so REST consumers can still render the media after reload/resume.
  *
  * A user `video_url` part projects to a structured `video` content part so
- * REST consumers can render it: a base64 data url becomes `{ kind: 'base64' }`,
- * any other url becomes `{ kind: 'url' }` carrying the provider id. An
- * `audio_url` part still flattens to a text marker.
+ * REST consumers can render it: an internal `kimi-file://<id>?path=…`
+ * reference becomes `{ kind: 'file', file_id }` (the materialization path is
+ * stripped, never leaked to clients); any other url becomes `{ kind: 'url' }`
+ * carrying the provider id. An `audio_url` part still flattens to a text
+ * marker.
  */
 
-import type { ContextMessage } from '@moonshot-ai/agent-core-v2';
+import { parseKimiFileUrl, type ContextMessage } from '@moonshot-ai/agent-core-v2';
 
 import type { Message, MessageContent, MessageRole, ToolUseContent } from '../../protocol/message';
 
@@ -49,10 +51,10 @@ function mapContentPart(part: ContextMessage['content'][number]): MessageContent
     case 'audio_url':
       return { type: 'text', text: `[audio:${part.audioUrl.url}]` };
     case 'video_url': {
-      const match = /^data:([^;]+);base64,(.*)$/.exec(part.videoUrl.url);
-      return match === null
-        ? { type: 'video', source: { kind: 'url', url: part.videoUrl.url, id: part.videoUrl.id } }
-        : { type: 'video', source: { kind: 'base64', media_type: match[1]!, data: match[2]! } };
+      const ref = parseKimiFileUrl(part.videoUrl.url);
+      return ref !== undefined
+        ? { type: 'video', source: { kind: 'file', file_id: ref.fileId } }
+        : { type: 'video', source: { kind: 'url', url: part.videoUrl.url, id: part.videoUrl.id } };
     }
   }
 }

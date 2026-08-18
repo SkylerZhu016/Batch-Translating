@@ -60,12 +60,9 @@ const versionOutput = await runBundle(['--version']);
 assertIncludes(versionOutput, expectedVersion, '--version');
 
 const helpOutput = await runBundle(['--help']);
-assertIncludes(helpOutput, 'Usage: kimi', '--help');
-
-const exportHelpOutput = await runBundle(['export', '--help']);
-assertIncludes(exportHelpOutput, 'Usage: kimi export', 'export --help');
+assertIncludes(helpOutput, 'Usage: batch-translating', '--help');
 
 const webHelpOutput = await runBundle(['web', '--help']);
-assertIncludes(webHelpOutput, 'Usage: kimi web', 'web --help');
+assertIncludes(webHelpOutput, 'Usage: batch-translating web', 'web --help');
 
 console.log(`Bundle smoke passed: ${bundlePath}`);

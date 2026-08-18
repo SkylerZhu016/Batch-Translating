@@ -84,7 +84,7 @@ export async function inspectTxt(sourcePath: string): Promise<InspectTxtResult> 
       message: 'No chapter heading matched; the whole file is treated as one front-matter chapter.',
     });
   }
-  drafts.forEach((draft, index) => {
+  drafts.forEach((draft) => {
     if (draft.paragraphs.length === 0) {
       issues.push({
         severity: 'warning',

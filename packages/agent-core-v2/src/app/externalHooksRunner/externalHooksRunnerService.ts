@@ -19,7 +19,7 @@ import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/
 import { Emitter, type Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
-
+import { IPluginService } from '#/app/plugin/plugin';
 import { HOOKS_SECTION, type HookDefConfig } from '#/agent/externalHooks/configSection';
 import type { HookBlockDecision, HookDef, HookResult } from '#/agent/externalHooks/types';
 import { IHostProcessService } from '#/os/interface/hostProcess';
@@ -42,13 +42,18 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
 
   constructor(
     @IConfigService private readonly config: IConfigService,
-
+    @IPluginService private readonly plugins: IPluginService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IHostProcessService private readonly hostProcess: IHostProcessService,
     private readonly callbacks: HookRunCallbacks = {},
   ) {
     super();
     this.ready = this.loadSafe();
+    this._register(
+      this.plugins.onDidReload(() => {
+        void this.reloadSafe();
+      }),
+    );
   }
 
   get summary(): Record<string, number> {
@@ -125,7 +130,8 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
   private async load(): Promise<void> {
     await this.config.ready;
     const configured = this.config.get(HOOKS_SECTION) as readonly HookDefConfig[] | undefined;
-    this.byEvent = indexHooks(configured ?? []);
+    const pluginHooks = await this.plugins.enabledHooks();
+    this.byEvent = indexHooks([...(configured ?? []), ...pluginHooks]);
     this._onDidReload.fire();
   }
 }

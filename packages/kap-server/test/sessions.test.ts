@@ -20,7 +20,6 @@ import {
   IAgentConversationUndoService,
   IAgentGoalService,
   IAgentLifecycleService,
-  IAgentProfileService,
   IEventBus,
   IEventService,
   MAIN_AGENT_ID,
@@ -153,11 +152,11 @@ describe('server-v2 /api/v1/sessions', () => {
     });
     const id = created.body.data.id;
     const webLog = [
-      JSON.stringify({ event: 'websocket.connected', time: 1 }),
-      JSON.stringify({ event: 'prompt.submitted', time: 2 }),
+      JSON.stringify({ event: 'ws:connection', ts: 1 }),
+      JSON.stringify({ event: 'prompt:accepted', ts: 2 }),
     ].join('\n');
 
-    // `connection: close` keeps the streamed download on a short-lived socket
+    // `connection: close` keeps the download on a short-lived socket
     // so undici never pools a keep-alive connection that would hold
     // `server.close()` open in afterEach (fastify's default keepAliveTimeout
     // is 72s, far beyond the hook timeout).
@@ -172,6 +171,7 @@ describe('server-v2 /api/v1/sessions', () => {
     const archive = Buffer.from(await res.arrayBuffer());
 
     expect(res.status).toBe(200);
+    expect(archive.length).toBeGreaterThan(0);
     expect(res.headers.get('content-type')).toBe('application/zip');
     expect(res.headers.get('content-disposition')).toBe(
       `attachment; filename="kimi-session-${id}.zip"`,
@@ -196,6 +196,143 @@ describe('server-v2 /api/v1/sessions', () => {
     // carries no `desktopVersion`.
     expect(manifest.desktopVersion).toBeUndefined();
     await expect.poll(() => listExportTempDirs(id)).toEqual([]);
+  });
+
+  it('keeps config, session, and Web-log secrets out of the redacted ZIP', async () => {
+    const apiKey = 'sk-session-export-redline-key';
+    const bearer = 'Bearer session-export-redline-token';
+    const originalText = 'Original manuscript text must never enter diagnostics';
+    await writeFile(
+      join(home as string, 'config.toml'),
+      [
+        'default_model = "provider-redline/DeepSeek V4 Flash: Go"',
+        'telemetry = true',
+        '',
+        '[providers.provider-redline]',
+        'type = "openai"',
+        'base_url = "http://127.0.0.1:9/v1"',
+        `api_key = "${apiKey}"`,
+        '',
+        '[models."provider-redline/DeepSeek V4 Flash: Go"]',
+        'provider = "provider-redline"',
+        'model = "DeepSeek V4 Flash: Go"',
+        'max_context_size = 200000',
+        '',
+        '[thinking]',
+        'enabled = true',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await (server as RunningServer).close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: {
+        cwd: home as string,
+        source_text: originalText,
+        api_key: apiKey,
+        authorization: bearer,
+      },
+    });
+    const id = created.body.data.id;
+    const webLog = JSON.stringify({
+      event: 'export:failed',
+      ts: 1,
+      detail: { source_text: originalText, api_key: apiKey, authorization: bearer },
+    });
+    const res = await fetch(`${base}/api/v1/sessions/${id}/export`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, {
+        'content-type': 'application/json',
+        connection: 'close',
+      }),
+      body: JSON.stringify({ web_log: webLog }),
+    } as never);
+    const archive = Buffer.from(await res.arrayBuffer());
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/zip');
+    const entries = readZipEntries(archive);
+    const manifest = JSON.parse(entries.get('manifest.json')?.toString('utf8') ?? 'null') as {
+      exportKind?: string;
+      privacy?: Record<string, unknown>;
+      diagnostics?: {
+        model?: Record<string, unknown>;
+        config?: Record<string, unknown>;
+        health?: { sessionIndex?: unknown; crash?: Record<string, unknown> };
+      };
+    };
+    expect(manifest).toMatchObject({
+      exportKind: 'redacted-diagnostics',
+      privacy: {
+        rawSessionIncluded: false,
+        sourceTextIncluded: false,
+        credentialsIncluded: false,
+      },
+    });
+    expect(manifest.diagnostics?.model).toMatchObject({
+      configured: 'provider-redline/DeepSeek V4 Flash: Go',
+      provider: 'provider-redline',
+    });
+    expect(manifest.diagnostics?.config).toMatchObject({
+      defaultModelConfigured: true,
+      providerCount: 1,
+      modelAliasCount: 1,
+      telemetryEnabled: true,
+      thinkingEnabled: true,
+    });
+    expect(manifest.diagnostics?.health?.sessionIndex).toBeDefined();
+    expect(manifest.diagnostics?.health?.crash).toMatchObject({ status: 'unavailable' });
+    expect(entries.get('logs/kimi-web.jsonl')?.toString('utf8')).toContain('export:failed');
+    expect([...entries.keys()]).not.toContain('config.toml');
+    for (const [name, data] of entries) {
+      const text = `${name}\n${data.toString('utf8')}`;
+      expect(text).not.toContain(apiKey);
+      expect(text).not.toContain(bearer);
+      expect(text).not.toContain(originalText);
+    }
+    await expect.poll(() => listExportTempDirs(id)).toEqual([]);
+  });
+
+  it('buffers ZIP responses and cleans temporary directories on export failures', async () => {
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const id = created.body.data.id;
+    const res = await fetch(`${base}/api/v1/sessions/${id}/export`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, {
+        'content-type': 'application/json',
+        connection: 'close',
+      }),
+      body: '{}',
+    } as never);
+    const archive = Buffer.from(await res.arrayBuffer());
+
+    expect(res.status).toBe(200);
+    expect(archive.length).toBeGreaterThan(0);
+    expect(res.headers.get('content-type')).toBe('application/zip');
+    expect(res.headers.get('content-disposition')).toBe(
+      `attachment; filename="kimi-session-${id}.zip"`,
+    );
+    expect(res.headers.get('content-length')).toBe(String(archive.length));
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    await expect.poll(() => listExportTempDirs(id)).toEqual([]);
+
+    const missingId = 'sess_export_cleanup_failure';
+    const failed = await postJson<null>(`/api/v1/sessions/${missingId}/export`, {});
+    expect(failed.status).toBe(200);
+    expect(failed.body.code).toBe(40401);
+    await expect.poll(() => listExportTempDirs(missingId)).toEqual([]);
   });
 
   it('returns the JSON session-not-found envelope instead of a ZIP', async () => {
@@ -250,7 +387,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(body.details?.[0]?.path).toBe('web_log');
   });
 
-  it('bundles the on-disk desktop app log when the desktop flag is set', async () => {
+  it('omits the raw desktop app log from redacted diagnostics', async () => {
     const created = await postJson<SessionWire>('/api/v1/sessions', {
       metadata: { cwd: home as string },
     });
@@ -279,10 +416,8 @@ describe('server-v2 /api/v1/sessions', () => {
       desktopLogPath?: string;
       desktopVersion?: string;
     };
-    expect(entries.get('logs/kimi-desktop.log')?.toString('utf8')).toBe(
-      '2026-07-27T00:00:00.000Z INFO  [renderer] hello\n',
-    );
-    expect(manifest.desktopLogPath).toBe('logs/kimi-desktop.log');
+    expect(entries.get('logs/kimi-desktop.log')).toBeUndefined();
+    expect(manifest.desktopLogPath).toBeUndefined();
     expect(manifest.kimiCodeVersion).toBe(TEST_HOST_IDENTITY.version);
     expect(manifest.desktopVersion).toBe(TEST_HOST_IDENTITY.version);
   });
@@ -330,10 +465,7 @@ describe('server-v2 /api/v1/sessions', () => {
     const cwd = home as string;
     const { status, body } = await postJson<SessionWire>('/api/v1/sessions', {
       title: 'hello',
-      metadata: {
-        cwd,
-        batchTranslation: { sourcePath: 'book.epub', stage: 'preflight' },
-      },
+      metadata: { cwd },
     });
     expect(status).toBe(200);
     expect(body.code).toBe(0);
@@ -341,10 +473,6 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(typeof body.data.workspace_id).toBe('string');
     expect(body.data.title).toBe('hello');
     expect(body.data.metadata.cwd).toBe(cwd);
-    expect(body.data.metadata['batchTranslation']).toEqual({
-      sourcePath: 'book.epub',
-      stage: 'preflight',
-    });
     expect(body.data.busy).toBe(false);
     expect(body.data.main_turn_active).toBe(false);
     expect(body.data.pending_interaction).toBe('none');
@@ -353,28 +481,6 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(body.data.message_count).toBe(0);
     expect(body.data.last_seq).toBe(0);
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
-  });
-
-  it('binds the requested agent profile while keeping legacy creates unbound', async () => {
-    const cwd = home as string;
-    const legacy = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
-    const legacySession = getLiveSessionById(
-      (server as RunningServer).core.accessor,
-      legacy.body.data.id,
-    );
-    expect(legacySession?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID)).toBeUndefined();
-
-    const created = await postJson<SessionWire>('/api/v1/sessions', {
-      metadata: { cwd },
-      agent_profile: 'batch-translator',
-    });
-    expect(created.body.code).toBe(0);
-    const session = getLiveSessionById(
-      (server as RunningServer).core.accessor,
-      created.body.data.id,
-    );
-    const main = session?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
-    expect(main?.accessor.get(IAgentProfileService).data().profileName).toBe('batch-translator');
   });
 
   it('rejects create without cwd or workspace_id (40001)', async () => {
@@ -1113,7 +1219,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(got.body.data.metadata.cwd).toBe(cwd);
   });
 
-  it('patches custom metadata on a second profile update', async () => {
+  it('replaces custom metadata on a second profile update (v1 semantics)', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
     const id = created.body.data.id;
@@ -1123,35 +1229,11 @@ describe('server-v2 /api/v1/sessions', () => {
       metadata: { baz: 1 },
     });
     expect(second.body.code).toBe(0);
-    expect(second.body.data.metadata['foo']).toBe('bar');
+    // v1 writes the patch straight into `custom` (replace, not deep-merge): the
+    // first key is gone, the new key is present, and cwd still wins.
+    expect(second.body.data.metadata['foo']).toBeUndefined();
     expect(second.body.data.metadata['baz']).toBe(1);
     expect(second.body.data.metadata.cwd).toBe(cwd);
-  });
-
-  it('permanently deletes a session and publishes the deleted lifecycle fact', async () => {
-    const cwd = home as string;
-    const created = await postJson<SessionWire>('/api/v1/sessions', {
-      metadata: { cwd, batchTranslation: { stage: 'review' } },
-    });
-    const id = created.body.data.id;
-    const events: { type: string; payload: unknown }[] = [];
-    const sub = (server as RunningServer).core.accessor
-      .get(IEventService)
-      .subscribe((event) => events.push(event));
-
-    const deleted = await deleteJson<{ deleted: true }>(`/api/v1/sessions/${id}`);
-    sub.dispose();
-
-    expect(deleted.body.code).toBe(0);
-    expect(deleted.body.data).toEqual({ deleted: true });
-    const got = await getJson<null>(`/api/v1/sessions/${id}`);
-    expect(got.body.code).toBe(40401);
-    const listed = await getJson<PageWire>('/api/v1/sessions?include_archive=true');
-    expect(listed.body.data.items.some((session) => session.id === id)).toBe(false);
-    expect(events).toContainEqual({
-      type: 'event.session.deleted',
-      payload: { agentId: 'main', sessionId: id },
-    });
   });
 
   it('applies agent_config.permission_mode via profile idempotently', async () => {

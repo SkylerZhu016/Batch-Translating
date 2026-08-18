@@ -26,6 +26,58 @@ export interface ExportSessionPayload {
   readonly desktopVersion?: string;
   readonly installSource?: string | undefined;
   readonly shellEnv?: ShellEnvironment | undefined;
+  readonly redacted?: boolean;
+  readonly diagnostics?: ExportDiagnosticContext;
+}
+
+export interface ExportDiagnosticContext {
+  readonly product: string;
+  readonly upstreamBaseline: string;
+  readonly runtime: {
+    readonly os: NodeJS.Platform;
+    readonly arch: string;
+    readonly node: string;
+  };
+  readonly engine: {
+    readonly pid: number;
+    readonly serverId: string;
+    readonly origin: string;
+    readonly port: number;
+  };
+  readonly model?: {
+    readonly configured?: string;
+    readonly provider?: string;
+  };
+  readonly config: {
+    readonly defaultModelConfigured: boolean;
+    readonly providerCount: number;
+    readonly modelAliasCount: number;
+    readonly telemetryEnabled: boolean;
+    readonly thinkingEnabled: boolean;
+  };
+  readonly project?: {
+    readonly schemaVersion?: number;
+    readonly projectId?: string;
+    readonly revision?: number;
+    readonly status?: string;
+    readonly activeStageId?: string;
+    readonly instructionVersion?: number;
+    readonly sourceKind?: string;
+    readonly chapterCount?: number;
+    readonly completedChapterCount?: number;
+    readonly openIssueCount?: number;
+    readonly artifactCount?: number;
+  };
+  readonly health: {
+    readonly sessionIndex: string;
+    readonly ledger: string;
+    readonly workers: string;
+    readonly rag: string;
+    readonly crash: {
+      readonly status: 'unavailable';
+      readonly reason: string;
+    };
+  };
 }
 
 export interface ExportSessionManifest {
@@ -46,6 +98,13 @@ export interface ExportSessionManifest {
   readonly desktopVersion?: string;
   readonly installSource?: string | undefined;
   readonly shellEnv?: ShellEnvironment | undefined;
+  readonly exportKind?: 'full-session' | 'redacted-diagnostics';
+  readonly privacy?: {
+    readonly rawSessionIncluded: boolean;
+    readonly sourceTextIncluded: boolean;
+    readonly credentialsIncluded: false;
+  };
+  readonly diagnostics?: ExportDiagnosticContext;
 }
 
 export interface ExportSessionResult {

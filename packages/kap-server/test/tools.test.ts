@@ -1,13 +1,16 @@
 /**
- * `/api/v1` tools route — server-v2 port of `packages/server/test/tools.e2e.test.ts`.
+ * `/api/v1` tools + MCP routes — server-v2 port of `packages/server/test/tools.e2e.test.ts`.
  *
- * Covers the wire contract of the endpoint:
+ * Covers the wire contract of the three endpoints:
  *   - GET  /api/v1/tools                              → envelope shape + tools[]
+ *   - GET  /api/v1/mcp/servers                        → envelope shape + servers[]
+ *   - POST /api/v1/mcp/servers/{id}:restart           → {restarting:true} / 40408
+ *   - POST /api/v1/mcp/servers/foo:bogus              → 40001 unsupported action
  *
- * Unlike v1 (which sources this from a global singleton), server-v2 resolves
- * `IToolRegistry` from the most-recent session's `main` agent.
- * The empty-list fallback for "no session yet" and "no main agent yet"
- * (gap G10) is exercised explicitly.
+ * Unlike v1 (which sources these from a global singleton), server-v2 resolves
+ * `IToolRegistry` / `IMcpService` from the most-recent session's `main` agent.
+ * The empty-list / 40408 fallbacks for "no session yet" and "no main agent yet"
+ * (gap G10) are exercised explicitly.
  */
 
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -22,7 +25,10 @@ import {
   IModelCatalog,
   type ExecutableTool,
 } from '@moonshot-ai/agent-core-v2';
-import { listToolsResponseSchema } from '../src/protocol/rest-tool';
+import {
+  listMcpServersResponseSchema,
+  listToolsResponseSchema,
+} from '../src/protocol/rest-tool';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -45,7 +51,7 @@ interface ToolWire {
   active?: boolean;
 }
 
-describe('server-v2 /api/v1 tools', () => {
+describe('server-v2 /api/v1 tools + mcp', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -126,7 +132,7 @@ describe('server-v2 /api/v1 tools', () => {
   }
 
   // The main agent scope is not created automatically on session creation
-  // (server-v2 gap G10); create it here so IToolRegistry resolves.
+  // (server-v2 gap G10); create it here so IToolRegistry / IMcpService resolve.
   async function ensureMainAgent(sessionId: string) {
     const session = getLiveSessionById(server!.core.accessor, sessionId);
     if (session === undefined) throw new Error(`session ${sessionId} not found`);
@@ -162,13 +168,14 @@ describe('server-v2 /api/v1 tools', () => {
       expect(listToolsResponseSchema.parse(body.data).tools.length).toBeGreaterThan(0);
     });
 
-    it('projects registered tools with source mapping', async () => {
+    it('projects registered tools with source mapping and mcp server id', async () => {
       const id = await createSession();
       const agent = await ensureMainAgent(id);
       const registry = agent.accessor.get(IAgentToolRegistryService);
       const schema = { type: 'object', properties: { msg: { type: 'string' } } };
       registry.register(makeTool('Echo', schema), { source: 'builtin' });
       registry.register(makeTool('MySkill'), { source: 'user' });
+      registry.register(makeTool('mcp__myserver__search'), { source: 'mcp' });
 
       const { body } = await getJson<{ tools: ToolWire[] }>('/api/v1/tools');
       expect(body.code).toBe(0);
@@ -184,6 +191,10 @@ describe('server-v2 /api/v1 tools', () => {
       const skill = tools.find((t) => t.name === 'MySkill');
       // v2 `user` source maps to the wire `skill` name.
       expect(skill).toMatchObject({ source: 'skill' });
+
+      const mcp = tools.find((t) => t.name === 'mcp__myserver__search');
+      // Qualified name `mcp__<server>__<tool>` yields the server id.
+      expect(mcp).toMatchObject({ source: 'mcp', mcp_server_id: 'myserver' });
     });
 
     it('accepts an explicit session_id query', async () => {
@@ -216,6 +227,60 @@ describe('server-v2 /api/v1 tools', () => {
 
     it('rejects an empty session_id with 40001', async () => {
       const { body } = await getJson<null>('/api/v1/tools?session_id=');
+      expect(body.code).toBe(40001);
+    });
+  });
+
+  describe('GET /api/v1/mcp/servers', () => {
+    it('returns an empty list before any session exists', async () => {
+      const { status, body } = await getJson<{ servers: unknown[] }>('/api/v1/mcp/servers');
+      expect(status).toBe(200);
+      expect(body.code).toBe(0);
+      expect(listMcpServersResponseSchema.parse(body.data).servers).toEqual([]);
+    });
+
+    it('returns an empty list when the session has no main agent yet', async () => {
+      await createSession();
+      const { body } = await getJson<{ servers: unknown[] }>('/api/v1/mcp/servers');
+      expect(body.code).toBe(0);
+      expect(listMcpServersResponseSchema.parse(body.data).servers).toEqual([]);
+    });
+
+    it('returns a parseable servers list once the main agent exists', async () => {
+      const id = await createSession();
+      await ensureMainAgent(id);
+      const { body } = await getJson<{ servers: unknown[] }>('/api/v1/mcp/servers');
+      expect(body.code).toBe(0);
+      // No MCP servers configured in the sandboxed home → empty, but the route
+      // must still resolve IMcpService successfully and answer a valid shape.
+      expect(listMcpServersResponseSchema.parse(body.data).servers).toEqual([]);
+    });
+  });
+
+  describe('POST /api/v1/mcp/servers/{id}:restart', () => {
+    it('returns 40408 for an unknown server id', async () => {
+      const id = await createSession();
+      await ensureMainAgent(id);
+      const { body } = await postJson<null>('/api/v1/mcp/servers/does-not-exist:restart');
+      expect(body.code).toBe(40408);
+      expect(body.msg).toMatch(/does not exist/);
+    });
+
+    it('returns 40408 even before any session is created', async () => {
+      const { body } = await postJson<null>('/api/v1/mcp/servers/x:restart');
+      expect(body.code).toBe(40408);
+    });
+
+    it('rejects an unsupported action with 40001', async () => {
+      await createSession();
+      const { body } = await postJson<null>('/api/v1/mcp/servers/foo:bogus');
+      expect(body.code).toBe(40001);
+      expect(body.msg).toMatch(/unsupported action/);
+    });
+
+    it('rejects a bare {id} (no action) with 40001', async () => {
+      await createSession();
+      const { body } = await postJson<null>('/api/v1/mcp/servers/foo');
       expect(body.code).toBe(40001);
     });
   });

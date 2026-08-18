@@ -99,48 +99,6 @@ describe('server-v2 /api/v1/config', () => {
     expect(after.yolo).toBe(false);
   });
 
-  it('round-trips the four-tool allowlist through [tools]', async () => {
-    const enabled = ['Read', 'Write', 'Bash', 'AgentSwarm'];
-    await boot('[tools]\nenabled = ["Read", "Write", "Bash", "AgentSwarm"]\n');
-
-    const initial = await getConfig();
-    expect(initial.tools).toEqual({ enabled });
-
-    const cfg = await patchConfig({
-      tools: {
-        enabled,
-        disabled: ['FetchURL'],
-      },
-    });
-    expect(cfg.tools).toEqual({ enabled, disabled: ['FetchURL'] });
-
-    const after = await getConfig();
-    expect(after.tools).toEqual({ enabled, disabled: ['FetchURL'] });
-
-    const toml = await readFile(join(home as string, 'config.toml'), 'utf-8');
-    expect(toml).toContain('[tools]');
-    expect(toml).toContain('enabled = [');
-    expect(toml).toContain('"AgentSwarm"');
-    expect(toml).toContain('disabled = [');
-    expect(toml).toContain('"FetchURL"');
-  });
-
-  it('POST identity persists [identity] and echoes it on GET', async () => {
-    await boot();
-    const identity = { name: 'Example Product', slug: 'example-product' };
-
-    const cfg = await patchConfig({ identity });
-    expect(cfg.identity).toEqual(identity);
-
-    const after = await getConfig();
-    expect(after.identity).toEqual(identity);
-
-    const toml = await readFile(join(home as string, 'config.toml'), 'utf-8');
-    expect(toml).toContain('[identity]');
-    expect(toml).toContain('name = "Example Product"');
-    expect(toml).toContain('slug = "example-product"');
-  });
-
   it('POST secondary_model persists [secondary_model] and echoes it on GET', async () => {
     await boot();
     const cfg = await patchConfig({

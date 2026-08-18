@@ -44,6 +44,19 @@ export const agentPlanContract = {
   cancel: { input: z.tuple([z.string().optional()]), output: noResult },
 } satisfies ServiceContract;
 
+/** `McpServerEntry` from the engine's `mcpCore/connection-manager`. */
+export const mcpServerEntrySchema = z.object({
+  name: z.string(),
+  transport: z.enum(['stdio', 'http', 'sse']),
+  status: z.enum(['pending', 'connected', 'failed', 'disabled', 'needs-auth']),
+  toolCount: z.number(),
+  error: z.string().optional(),
+});
+
+export const agentMcpContract = {
+  list: { input: z.tuple([]), output: z.array(mcpServerEntrySchema) },
+} satisfies ServiceContract;
+
 /** `FullCompactionInput` from the engine's `agent/fullCompaction`. */
 export const fullCompactionInputSchema = z.object({
   source: z.enum(['manual', 'auto']),

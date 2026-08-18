@@ -36,7 +36,7 @@ import {
   resolvePathAccessPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
-
+import { MEDIA_SNIFF_BYTES, detectFileType } from '#/agent/media/file-type';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { literalRulePattern, matchesPathRuleSubject } from '#/tool/rule-match';
 import { makeCarriageReturnsVisible, type LineEndingStyle } from '#/_base/text/line-endings';
@@ -186,7 +186,9 @@ function containsNulByte(text: string): boolean {
 
 function notReadableFileOutput(path: string): string {
   return (
-    `"${path}" is not readable as UTF-8 text.`
+    `"${path}" is not readable as UTF-8 text. ` +
+    'If it is an image or video, use ReadMediaFile. ' +
+    'For other binary formats, use Bash or an MCP tool if available.'
   );
 }
 
@@ -255,6 +257,20 @@ export class ReadTool implements IReadTool {
         return { isError: true, output: `"${args.path}" is not a file.` };
       }
 
+      const header = await this.fs.readBytes(safePath, MEDIA_SNIFF_BYTES);
+      const fileType = detectFileType(safePath, header);
+      if (fileType.kind === 'image' || fileType.kind === 'video') {
+        return {
+          isError: true,
+          output: `"${args.path}" is a ${fileType.kind} file. Use ReadMediaFile to read image or video files.`,
+        };
+      }
+      if (fileType.kind === 'unknown') {
+        return {
+          isError: true,
+          output: notReadableFileOutput(args.path),
+        };
+      }
 
       const lineOffset = args.line_offset ?? 1;
       const requestedLines = args.n_lines ?? MAX_LINES;

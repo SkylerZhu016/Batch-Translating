@@ -1,13 +1,13 @@
 /**
  * Experimental agent-core-v2 engine gate for the CLI surfaces.
  *
- * When the master switch `KIMI_CODE_EXPERIMENTAL_FLAG` is truthy, `kimi -p`
+ * When the master switch `KIMI_CODE_EXPERIMENTAL_FLAG` is truthy, `batch-translating -p`
  * (print mode) routes to the native agent-core-v2 runner (see
  * `run-prompt.ts`), instead of the default v1 engine. The master switch also
  * enables every experimental feature flag in the engine. Unset / any
  * non-truthy value keeps the v1 path.
  *
- * Note: `kimi web` always boots kap-server (the agent-core-v2 engine
+ * Note: `batch-translating web` always boots kap-server (the agent-core-v2 engine
  * server) — it does not consult this switch.
  */
 

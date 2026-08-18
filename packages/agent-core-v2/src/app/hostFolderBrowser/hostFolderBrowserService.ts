@@ -7,7 +7,7 @@
  * directory-only entries, dot-last sorting, and `parent` resolution.
  */
 
-import { readdir, realpath, stat } from 'node:fs/promises';
+import { readdir, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 
@@ -56,26 +56,6 @@ export class HostFolderBrowser implements IHostFolderBrowser {
         path: join(realTarget, d.name),
         is_dir: true as const,
       }));
-
-    // At a Windows drive root (e.g. "C:\") the folder picker would otherwise
-    // dead-end: dirname("C:\") === "C:\" means there is no parent to climb to,
-    // so the UI can never reach the other drives. Enumerate every existing
-    // drive as a directory entry so the tree can cross drives.
-    if (process.platform === 'win32' && dirname(realTarget) === realTarget) {
-      const driveRe = /^[A-Za-z]:[\\/]$/;
-      if (driveRe.test(realTarget)) {
-        for (let code = 65; code <= 90; code++) {
-          const letter = String.fromCharCode(code);
-          const drive = `${letter}:\\`;
-          try {
-            await stat(drive);
-            entries.push({ name: `${letter}:\\`, path: drive, is_dir: true });
-          } catch {
-            // Drive absent — skip.
-          }
-        }
-      }
-    }
 
     entries.sort(compareBrowseEntries);
 

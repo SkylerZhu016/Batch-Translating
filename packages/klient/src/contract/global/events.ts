@@ -11,6 +11,7 @@ import { z } from 'zod';
 import type { ConfigChangedEvent } from '@moonshot-ai/agent-core-v2/app/config/config';
 import type { ModelsChangedEvent } from '@moonshot-ai/agent-core-v2/kosong/model/model';
 import type { ProvidersChangedEvent } from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
+import type { ReloadSummary } from '@moonshot-ai/agent-core-v2/app/plugin/types';
 import type { IOAuthService } from '@moonshot-ai/agent-core-v2/app/auth/auth';
 
 import { stringDeltaSchema } from '../helpers.js';
@@ -44,6 +45,7 @@ export interface KlientEventPayloads {
   'config.sectionChanged': ConfigChangedEvent;
   'kosong.providers.changed': ProvidersChangedEvent;
   'kosong.models.changed': ModelsChangedEvent;
+  'plugins.reloaded': ReloadSummary;
   'session.archived': SessionArchivedPayload;
   'session.metaUpdated': SessionMetaUpdatedPayload;
   'kosong.changed': CatalogChangedPayload;
@@ -56,6 +58,12 @@ const configChangedSchema = z.object({
   source: z.enum(['load', 'reload', 'set']),
   value: z.unknown(),
   previousValue: z.unknown(),
+});
+
+const reloadSummarySchema = z.object({
+  added: z.array(z.string()),
+  removed: z.array(z.string()),
+  errors: z.array(z.object({ id: z.string(), message: z.string() })),
 });
 
 const sessionMetaUpdatedSchema = z.object({
@@ -107,6 +115,12 @@ export const globalEvents = {
     service: 'modelService',
     event: 'onDidChangeModels',
     schema: stringDeltaSchema,
+  },
+  'plugins.reloaded': {
+    kind: 'emitter',
+    service: 'pluginService',
+    event: 'onDidReload',
+    schema: reloadSummarySchema,
   },
   'session.archived': {
     kind: 'bus',

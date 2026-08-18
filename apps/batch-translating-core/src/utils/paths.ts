@@ -33,11 +33,11 @@ import {
  * Priority: `BATCH_TRANSLATING_HOME` / `KIMI_CODE_HOME` env var > `~/.batch-translating`.
  */
 export function getDataDir(): string {
-  const envDir = process.env[BATCH_TRANSLATING_HOME_ENV] ?? process.env[KIMI_CODE_HOME_ENV];
-  if (envDir) {
-    return envDir;
-  }
-  return join(homedir(), KIMI_CODE_DATA_DIR_NAME);
+  const envDir = [
+    process.env[BATCH_TRANSLATING_HOME_ENV],
+    process.env[KIMI_CODE_HOME_ENV],
+  ].find((value) => value !== undefined && value.trim().length > 0);
+  return envDir ?? join(homedir(), KIMI_CODE_DATA_DIR_NAME);
 }
 
 /**

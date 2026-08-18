@@ -28,6 +28,7 @@ import { IWorkspaceStateService } from '#/workspace/state/workspaceState';
 
 import { IExplicitFileSkillSource } from './explicitFileSkillSource';
 import { IExtraFileSkillSource } from './extraFileSkillSource';
+import { IPluginSkillSource } from './pluginSkillSource';
 import { IWorkspaceRootSkillSource } from './rootFileSkillSource';
 import { IWorkspaceSkillCatalog } from './workspaceSkillCatalog';
 
@@ -54,13 +55,13 @@ export class WorkspaceSkillCatalogService extends Disposable implements IWorkspa
     @IExplicitFileSkillSource explicit: IExplicitFileSkillSource,
     @IExtraFileSkillSource extra: IExtraFileSkillSource,
     @IWorkspaceRootSkillSource workspace: IWorkspaceRootSkillSource,
-
+    @IPluginSkillSource plugin: IPluginSkillSource,
     @IWorkspaceStateService private readonly states: IWorkspaceStateService,
   ) {
     super();
     this.states.register(workspaceSkillCatalogContributionsKey);
     this.states.register(workspaceSkillCatalogMergedKey);
-    this.sources = [builtin, user, explicit, extra, workspace].toSorted(
+    this.sources = [builtin, user, explicit, extra, workspace, plugin].toSorted(
       (a, b) => a.priority - b.priority,
     );
     for (const s of this.sources) {

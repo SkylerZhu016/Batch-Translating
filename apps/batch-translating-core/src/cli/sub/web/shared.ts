@@ -1,5 +1,5 @@
 /**
- * Shared helpers for `kimi web` and its subcommands.
+ * Shared helpers for `batch-translating web` and its subcommands.
  *
  * Owns the default host/port, option parsers, and health/readiness probes.
  */

@@ -27,6 +27,7 @@ interface StoredCredential {
 }
 
 let memory: StoredCredential | undefined;
+let initialized = false;
 
 type AuthRequiredListener = () => void;
 const listeners = new Set<AuthRequiredListener>();
@@ -40,13 +41,19 @@ function readFragmentToken(): string | undefined {
   if (!token) return undefined;
   // Scrub the fragment (keep path + query) so the token is not left in the
   // address bar, browser history, or any screenshot of the window.
-  const url = new URL(window.location.href);
-  url.hash = '';
-  window.history.replaceState(
-    window.history.state,
-    '',
-    `${url.pathname}${url.search}`,
-  );
+  try {
+    const url = new URL(window.location.href);
+    url.hash = '';
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${url.pathname}${url.search}`,
+    );
+  } catch {
+    // Browser history can be unavailable in sandboxed/private contexts. The
+    // credential must still reach memory so the first authenticated request
+    // succeeds; callers never send the fragment to the server.
+  }
   return token;
 }
 
@@ -167,17 +174,26 @@ function loadStored(): StoredCredential | undefined {
 }
 
 /**
- * Initialize the credential store. Call once at app boot (before the first
- * API/WS call). Prefers a fragment token over a stored one. Returns true if a
- * credential is available afterwards (so the caller can skip the modal).
+ * Initialize the credential store at app boot (before the first API/WS call).
+ * Prefers a fragment token over a stored one. Repeated calls are idempotent.
+ * Returns true if a credential is available afterwards (so the caller can
+ * skip the modal).
  */
 export function initServerAuth(): boolean {
+  // App bootstrap owns initialization and calls this before mounting any
+  // component. Keep the function idempotent as a defensive boundary: a
+  // repeated call must not replace a fragment credential that only lives in
+  // memory because browser storage is unavailable.
+  if (initialized) return getCredential() !== undefined;
+
   const fragment = readFragmentToken();
   if (fragment) {
     setCredential(fragment);
+    initialized = true;
     return true;
   }
   memory = loadStored();
+  initialized = true;
   return memory !== undefined;
 }
 

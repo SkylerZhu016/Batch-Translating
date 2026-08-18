@@ -42,7 +42,7 @@ ipc │ memory
   the facade is the public contract.
   - `klient.global.*` — `sessions.*` (incl. `create`), `workspaces.*`,
     `config.*`, `providers.*`, `models.*`, `catalog.*`, `auth.*`, `flags.*`,
-    `hostFs.*`, `env()`.
+    `plugins.*`, `hostFs.*`, `env()`.
   - `klient.session(id).*` — `get/setTitle/update/status/close/archive/
     restore/fork/createChild`, `approvals.*`, `questions.*`,
     `interactions.*`, `agents()`.

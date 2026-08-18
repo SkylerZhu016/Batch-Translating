@@ -2,11 +2,11 @@
 // Press-Enter-to-restart wrapper for the local server. No file watcher.
 //
 // Spawns `tsx ./src/main.ts web --no-open …extraArgs` once, then on each
-// newline read from stdin SIGTERMs the child and respawns after it has
-// cleanly exited. SIGTERM triggers the server's own `shutdown()` handler
-// (apps/batch-translating-core/src/cli/sub/web/run.ts) which releases the instance
-// registration and closes WS conns before exit, so a fresh start can
-// re-acquire 58627 without a stale-entry fight.
+// newline read from stdin stops the child and respawns after it has exited.
+// POSIX SIGTERM triggers the server's own `shutdown()` handler
+// (apps/batch-translating-core/src/cli/sub/web/run.ts). Windows process signals
+// are implemented as process termination by Node; the instance registry then
+// rejects the dead PID and the fresh server can safely reclaim a port.
 //
 // CLI args after `--` (or any extras) are passed straight through, so:
 //   pnpm dev:server:restart -- --host 0.0.0.0 --port 58627 --log-level debug
@@ -19,8 +19,11 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(SCRIPT_DIR, '..');
-
-const tsxBin = process.platform === 'win32' ? 'tsx.cmd' : 'tsx';
+// Launch the JavaScript entry point through the current Node executable.
+// Recent Node releases reject direct `.cmd` children with `spawn EINVAL` on
+// Windows unless a shell is enabled; enabling a shell here would also make
+// forwarded development arguments unnecessarily hard to quote safely.
+const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'));
 
 const cliArgs = process.argv.slice(2);
 if (cliArgs[0] === '--') cliArgs.shift();
@@ -43,7 +46,7 @@ let killTimer = null;
 
 function start() {
   console.error('[dev:server:restart] starting server…');
-  child = spawn(tsxBin, tsxArgs, {
+  child = spawn(process.execPath, [tsxCli, ...tsxArgs], {
     cwd: APP_ROOT,
     env: { ...process.env, KIMI_CODE_DEV_SERVER: '1' },
     // Server does not read stdin; keep ours free for the Enter trigger.

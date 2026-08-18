@@ -205,7 +205,7 @@ export function resolveKimiHome(
   env: NodeJS.ProcessEnv = process.env,
   osHomeDir: string = homedir(),
 ): string {
-  return homeDir ?? env['BATCH_TRANSLATING_HOME'] ?? env['KIMI_CODE_HOME'] ?? join(osHomeDir, '.batch-translating');
+  return homeDir ?? env['KIMI_CODE_HOME'] ?? join(osHomeDir, '.kimi-code');
 }
 
 export function resolveConfigPath(input: {

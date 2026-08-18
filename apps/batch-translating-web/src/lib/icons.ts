@@ -1,15 +1,12 @@
 // apps/batch-translating-web/src/lib/icons.ts
 // Single source of truth for apps/batch-translating-web icons (design-system §02).
 //
-// Icons come from three collections, all bundled by unplugin-icons at build
+// Icons come from two collections, both bundled by unplugin-icons at build
 // time — only the icons listed below end up in the production bundle:
 //   - `~icons/kimi/*` — Kimi Design System icons (24×24 outlined,
 //     fill="currentColor"), local SVGs under src/icons/kimi/ registered as a
 //     custom collection in vite.config.ts. Preferred when a Kimi icon exists
 //     for the intent.
-//   - `~icons/tabler/*` — Tabler Icons (https://tabler.io/icons, MIT),
-//     24×24 stroke-based (stroke="currentColor"); used for the sidebar
-//     panel toggle, which neither pack above covers well.
 //   - `~icons/ri/*` — Remix Icon (https://remixicon.com/, Apache-2.0) for
 //     the remaining intents.
 // Each icon is imported twice: once as a Vue component (for <Icon name=... />)
@@ -33,17 +30,11 @@ import KimiMore from '~icons/kimi/more';
 import KimiSearch from '~icons/kimi/search';
 import KimiSetting from '~icons/kimi/setting';
 
-// Components (Tabler) ---------------------------------------------------------
-import TablerSidebarLeftCollapse from '~icons/tabler/layout-sidebar-left-collapse';
-import TablerSidebarLeftExpand from '~icons/tabler/layout-sidebar-left-expand';
-import TablerPaperclip from '~icons/tabler/paperclip';
-import TablerRefresh from '~icons/tabler/refresh';
-import TablerTool from '~icons/tabler/tool';
-
 // Components (Remix) ---------------------------------------------------------
 import RiAddLine from '~icons/ri/add-line';
 import RiAlertLine from '~icons/ri/alert-line';
 import RiArchiveLine from '~icons/ri/archive-line';
+import RiAttachment2 from '~icons/ri/attachment-2';
 import RiArrowDownLine from '~icons/ri/arrow-down-line';
 import RiArrowDownSLine from '~icons/ri/arrow-down-s-line';
 import RiArrowGoBackLine from '~icons/ri/arrow-go-back-line';
@@ -88,6 +79,9 @@ import RiPauseFill from '~icons/ri/pause-fill';
 import RiPencilLine from '~icons/ri/pencil-line';
 import RiPlayFill from '~icons/ri/play-fill';
 import RiQuestionLine from '~icons/ri/question-line';
+import RiRefreshLine from '~icons/ri/refresh-line';
+import RiSidebarFoldLine from '~icons/ri/sidebar-fold-line';
+import RiSidebarUnfoldLine from '~icons/ri/sidebar-unfold-line';
 import RiSortDesc from '~icons/ri/sort-desc';
 import RiSparklingLine from '~icons/ri/sparkling-line';
 import RiStarFill from '~icons/ri/star-fill';
@@ -108,17 +102,11 @@ import RawKimiMore from '~icons/kimi/more?raw';
 import RawKimiSearch from '~icons/kimi/search?raw';
 import RawKimiSetting from '~icons/kimi/setting?raw';
 
-// Raw SVG strings (Tabler) ----------------------------------------------------
-import RawTablerSidebarLeftCollapse from '~icons/tabler/layout-sidebar-left-collapse?raw';
-import RawTablerSidebarLeftExpand from '~icons/tabler/layout-sidebar-left-expand?raw';
-import RawTablerPaperclip from '~icons/tabler/paperclip?raw';
-import RawTablerRefresh from '~icons/tabler/refresh?raw';
-import RawTablerTool from '~icons/tabler/tool?raw';
-
 // Raw SVG strings (Remix) ----------------------------------------------------
 import RawAddLine from '~icons/ri/add-line?raw';
 import RawAlertLine from '~icons/ri/alert-line?raw';
 import RawArchiveLine from '~icons/ri/archive-line?raw';
+import RawAttachment2 from '~icons/ri/attachment-2?raw';
 import RawArrowDownLine from '~icons/ri/arrow-down-line?raw';
 import RawArrowDownSLine from '~icons/ri/arrow-down-s-line?raw';
 import RawArrowGoBackLine from '~icons/ri/arrow-go-back-line?raw';
@@ -163,6 +151,9 @@ import RawPauseFill from '~icons/ri/pause-fill?raw';
 import RawPencilLine from '~icons/ri/pencil-line?raw';
 import RawPlayFill from '~icons/ri/play-fill?raw';
 import RawQuestionLine from '~icons/ri/question-line?raw';
+import RawRefreshLine from '~icons/ri/refresh-line?raw';
+import RawSidebarFoldLine from '~icons/ri/sidebar-fold-line?raw';
+import RawSidebarUnfoldLine from '~icons/ri/sidebar-unfold-line?raw';
 import RawSortDesc from '~icons/ri/sort-desc?raw';
 import RawSparklingLine from '~icons/ri/sparkling-line?raw';
 import RawStarFill from '~icons/ri/star-fill?raw';
@@ -293,8 +284,8 @@ export const ICONS: Record<IconName, IconEntry> = {
   'arrow-down': entry(RiArrowDownLine, RawArrowDownLine),
   'arrow-right': entry(RiArrowRightLine, RawArrowRightLine),
   minus: entry(RiSubtractLine, RawSubtractLine),
-  'panel-collapse': entry(TablerSidebarLeftCollapse, RawTablerSidebarLeftCollapse),
-  'panel-expand': entry(TablerSidebarLeftExpand, RawTablerSidebarLeftExpand),
+  'panel-collapse': entry(RiSidebarFoldLine, RawSidebarFoldLine),
+  'panel-expand': entry(RiSidebarUnfoldLine, RawSidebarUnfoldLine),
   expand: entry(RiExpandDiagonalLine, RawExpandDiagonalLine),
   collapse: entry(RiCollapseDiagonalLine, RawCollapseDiagonalLine),
   list: entry(RiListUnordered, RawListUnordered),
@@ -309,9 +300,9 @@ export const ICONS: Record<IconName, IconEntry> = {
   'file-edit': entry(RiFileEditLine, RawFileEditLine),
   'file-plus': entry(RiFileAddLine, RawFileAddLine),
   'file-off': entry(RiFileLine, RawFileLine),
-  attachment: entry(TablerPaperclip, RawTablerPaperclip),
-  'refresh': entry(TablerRefresh, RawTablerRefresh),
-  wrench: entry(TablerTool, RawTablerTool),
+  attachment: entry(RiAttachment2, RawAttachment2),
+  'refresh': entry(RiRefreshLine, RawRefreshLine),
+  wrench: entry(RiToolsLine, RawToolsLine),
   'image-off': entry(RiImageLine, RawImageLine),
   code: entry(RiCodeLine, RawCodeLine),
   terminal: entry(RiTerminalBoxLine, RawTerminalBoxLine),

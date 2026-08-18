@@ -1,9 +1,9 @@
 /**
- * Tests for the `kimi web` Commander wiring and its subcommands.
+ * Tests for the `batch-translating web` Commander wiring and its subcommands.
  *
  * These tests don't actually start the server — the foreground runner is
  * injected, so they verify option parsing, the ready banner / one-line ready
- * output, browser opening, and the rotate-token / deprecated `kimi server kill`
+ * output, browser opening, and the rotate-token / deprecated `batch-translating server kill`
  * subcommands against fake deps.
  */
 
@@ -32,7 +32,7 @@ function stripAnsi(text: string): string {
 
 function makeProgram(): Command {
   // `commander` exitOverride avoids killing the test runner when --help/error fires.
-  const program = new Command('kimi').exitOverride();
+  const program = new Command('batch-translating').exitOverride();
   registerWebCommand(program);
   return program;
 }
@@ -79,7 +79,7 @@ function makeIo(): {
   };
 }
 
-describe('kimi web', () => {
+describe('batch-translating web', () => {
   it('registers the `web` command with only the rotate-token subcommand', () => {
     const program = makeProgram();
     const web = program.commands.find((c) => c.name() === 'web');
@@ -113,12 +113,12 @@ describe('kimi web', () => {
     expect(longs).not.toContain('--idle-grace-ms');
   });
 
-  it('routes `kimi server` and any legacy subcommand to a deprecation notice', async () => {
+  it('routes `batch-translating server` and any legacy subcommand to a deprecation notice', async () => {
     for (const argv of [
-      ['node', 'kimi', 'server'],
-      ['node', 'kimi', 'server', 'run', '--port', '1'],
-      ['node', 'kimi', 'server', 'status'],
-      ['node', 'kimi', 'server', 'ps', '--json'],
+      ['node', 'batch-translating', 'server'],
+      ['node', 'batch-translating', 'server', 'run', '--port', '1'],
+      ['node', 'batch-translating', 'server', 'status'],
+      ['node', 'batch-translating', 'server', 'ps', '--json'],
     ]) {
       const program = makeProgram();
       let stderr = '';
@@ -137,16 +137,16 @@ describe('kimi web', () => {
       exitSpy.mockRestore();
 
       expect(exitCalls).toEqual([1]);
-      expect(stderr).toContain('`kimi server` has been deprecated and no longer works.');
-      expect(stderr).toContain('kimi web');
-      expect(stderr).toContain('kimi server kill');
+      expect(stderr).toContain('`batch-translating server` has been deprecated and no longer works.');
+      expect(stderr).toContain('batch-translating web');
+      expect(stderr).toContain('batch-translating server kill');
       expect(stderr).toContain('0.28.0');
       expect(stderr).toContain('next major version');
     }
   });
 });
 
-describe('`kimi web` ready banner', () => {
+describe('`batch-translating web` ready banner', () => {
   it('prints the TUI-style ready panel once listening', async () => {
     const { handleWebCommand } = await import('#/cli/sub/web/run');
     // The runner reports the actual bound origin — the banner must take the
@@ -337,7 +337,7 @@ describe('ready banner reflects the bind class', () => {
   });
 });
 
-describe('`kimi web` opens the browser', () => {
+describe('`batch-translating web` opens the browser', () => {
   it('opens the Web UI URL with the #token= fragment by default', async () => {
     const { handleWebCommand } = await import('#/cli/sub/web/run');
     const { runner } = makeRunner();
@@ -393,7 +393,7 @@ describe('`kimi web` opens the browser', () => {
   });
 });
 
-describe('`kimi web` option threading', () => {
+describe('`batch-translating web` option threading', () => {
   it('threads the CLI flags into the foreground runner options', async () => {
     const { handleWebCommand } = await import('#/cli/sub/web/run');
     const { runner, calls } = makeRunner();
@@ -624,7 +624,7 @@ function makeLegacyKillDeps(overrides: Partial<LegacyKillDeps> = {}): {
   return { deps, writes, errors, signals, state, clock };
 }
 
-describe('`kimi server kill` (deprecated, legacy servers only)', () => {
+describe('`batch-translating server kill` (deprecated, legacy servers only)', () => {
   const legacyLock = { pid: 1234, host: '127.0.0.1', port: 58627 };
 
   it('is registered as the only working subcommand of the deprecated `server` command', () => {
@@ -894,7 +894,7 @@ describe('accessUrlLines', () => {
   });
 });
 
-describe('`kimi web rotate-token`', () => {
+describe('`batch-translating web rotate-token`', () => {
   let dir: string;
   let prevHome: string | undefined;
 
@@ -916,7 +916,7 @@ describe('`kimi web rotate-token`', () => {
 
   it('writes a new token to server.token and prints it', async () => {
     const { registerWebCommand } = await import('#/cli/sub/web');
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('batch-translating').exitOverride();
     registerWebCommand(program);
     let stdout = '';
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
@@ -924,7 +924,7 @@ describe('`kimi web rotate-token`', () => {
       return true;
     });
 
-    await program.parseAsync(['node', 'kimi', 'web', 'rotate-token']);
+    await program.parseAsync(['node', 'batch-translating', 'web', 'rotate-token']);
     writeSpy.mockRestore();
 
     const token = readFileSync(join(dir, 'server.token'), 'utf8').trim();
@@ -952,7 +952,7 @@ describe('`kimi web rotate-token`', () => {
       }),
     );
 
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('batch-translating').exitOverride();
     registerWebCommand(program);
     let stdout = '';
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
@@ -960,7 +960,7 @@ describe('`kimi web rotate-token`', () => {
       return true;
     });
 
-    await program.parseAsync(['node', 'kimi', 'web', 'rotate-token']);
+    await program.parseAsync(['node', 'batch-translating', 'web', 'rotate-token']);
     writeSpy.mockRestore();
 
     const token = readFileSync(join(dir, 'server.token'), 'utf8').trim();

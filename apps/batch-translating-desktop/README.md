@@ -1,83 +1,41 @@
-# Batch Translating Desktop Shell
+# Batch Translating Desktop
 
-A Tauri (Rust + WebView2) desktop shell for the Batch Translating workbench.
-It replaces the old two-step launcher (VBS → PowerShell → browser) with a
-single double-clickable `Batch Translating.exe`.
+这是 Batch Translating 的 Windows Tauri 桌面壳。它随安装包携带本机
+`batch-translating-engine.exe`，自动启动本地工作台，并在 WebView2 窗口中打开。
 
-## How it works
+## 运行与安全边界
 
-1. On launch the shell checks whether the engine is already serving on the
-   fixed loopback port `127.0.0.1:58627` (runtime state is recorded in
-   `%LOCALAPPDATA%\Batch Translating\runtime.json`). If a server is live —
-   started by this app or by the legacy launcher — it reconnects to it.
-2. Otherwise it spawns the engine — `batch-translating-engine.exe web
-   --no-open --host 127.0.0.1 --port 58627 --log-level info` (the engine binary
-   must sit next to `Batch Translating.exe`; `kimi.exe` is accepted as a
-   dev-build fallback and `BATCH_TRANSLATING_KIMI_EXE` overrides the path),
-   waits for the `Kimi server: <url>` ready line, records runtime state, and
-   opens the workbench WebView at that URL (the fragment carries the bearer
-   token).
-3. Closing the window keeps the engine running, so long-running batch
-   translation jobs continue in the background. Double-click the app again to
-   reconnect. Use `Stop-BatchTranslating.ps1` (in the engine release zip) to
-   shut the service down.
+1. 桌面壳优先请求 `127.0.0.1:58627`；若端口已占用，服务端可选择后续空闲端口，桌面壳以实际就绪地址为准。
+2. 仅当 `runtime.json` 记录的 PID 仍存活、带本机 token 请求 `/api/v1/meta` 得到相同的 `server_id`、引擎版本和端口，并且记录的 SHA-256 与当前安装（或开发覆盖路径）中的引擎二进制完全一致时，才会复用已有引擎。这里比较的是引擎文件身份，不会把桌面壳的 `0.1.0` 与引擎自身版本错误对比。
+3. 运行状态只保存 PID、服务身份、引擎版本、引擎文件指纹、origin、端口和时间，不保存 token 或带 token 的 URL。token 继续由引擎保存在用户的 `.batch-translating/server.token`。旧版或缺少指纹的运行记录不会被复用。
+4. 关闭窗口只隐藏到托盘，让长任务继续运行。桌面壳启动引擎后立即保留其 `Child` 句柄，并将它加入启用 `KILL_ON_JOB_CLOSE` 的 Windows Job Object；用户在托盘确认退出后，会先尝试受认证的 shutdown，再确保终止并回收自己启动的整个进程树。即使运行记录、token 缺失、HTTP 探测瞬时失败，或普通进程树终止命令失败，作业句柄关闭仍会兜底，避免自己启动的引擎成为继续产生模型成本的孤儿。
+5. 对复用的外部引擎，桌面壳没有进程所有权，会保留启动时验证通过的身份快照；退出只向该快照中重新验证成功的服务发送认证关机请求，绝不按裸 PID 强杀外部进程。若外部服务未在期限内退出，其运行记录会保留供下次验证复用。运行期间替换 `runtime.json` 不能改变请求目标，身份不明时也不会按端口杀进程。
+6. 引擎仅绑定 loopback，所有 HTTP 探测都有读写超时。
 
-A second instance of the app simply focuses the already-open window.
+兼容开发构建时，程序旁的 `kimi.exe` 可作为内部 fallback；正式安装包使用产品名 sidecar。`BATCH_TRANSLATING_KIMI_EXE` 可在开发时覆盖路径。
 
-## Building locally (Windows)
+## 本地构建
 
-Prerequisites: Rust (stable) + MSVC build tools, Node ≥ 24.15 with pnpm
-10.33.0, WebView2 runtime (preinstalled on Windows 11 / recent Windows 10).
+需要 Node.js 24.15.0、pnpm 10.33.0、Rust stable、MSVC 构建工具和 WebView2 Runtime。
 
 ```powershell
-# 1. Build the web workbench and the native engine (embeds the UI)
-pnpm --config.engine-strict=false install --frozen-lockfile   # if deps missing
-pnpm --filter @moonshot-ai/kimi-web build
-cd apps/batch-translating-core
-$env:KIMI_CODE_EXECUTABLE_NAME = 'batch-translating-engine.exe'   # product name
-pnpm build
-pnpm build:native:sea --profile=release
-cd ..
+corepack pnpm install --frozen-lockfile
+corepack pnpm batch:build
 
-# 2. Stage the engine for the Tauri bundle
-New-Item -ItemType Directory -Force batch-translating-desktop/src-tauri/binaries
-Copy-Item batch-translating-core/dist-native/bin/win32-x64/batch-translating-engine.exe `
-  batch-translating-desktop/src-tauri/binaries/batch-translating-engine-x86_64-pc-windows-msvc.exe
+Set-Location apps/batch-translating-core
+$env:KIMI_CODE_EXECUTABLE_NAME = 'batch-translating-engine.exe'
+corepack pnpm build:native:release
+Set-Location ../..
 
-# 3. Build the installer
-cd batch-translating-desktop
-npm install --no-save @tauri-apps/cli@^2
-npx tauri build
+New-Item -ItemType Directory -Force apps/batch-translating-desktop/src-tauri/binaries
+Copy-Item apps/batch-translating-core/dist-native/bin/win32-x64/batch-translating-engine.exe `
+  apps/batch-translating-desktop/src-tauri/binaries/batch-translating-engine-x86_64-pc-windows-msvc.exe
+
+Set-Location apps/batch-translating-desktop
+corepack pnpm exec tauri build
 ```
 
-The NSIS installer lands at
-`src-tauri/target/release/bundle/nsis/*.exe`. It installs per-user and places
-`Batch Translating.exe` next to `batch-translating-engine.exe`.
+NSIS 安装包位于 `src-tauri/target/release/bundle/nsis/`。仓库的
+`.github/workflows/batch-windows-build.yml` 执行相同构建、解包扫描并上传 CI artifact；它不会发布 GitHub Release。
 
-## What the installer contains (and what it never contains)
-
-The installer bundles exactly two programs plus icons: `Batch Translating.exe`
-(the shell) and `batch-translating-engine.exe` (the engine, based on a
-Kimi Code fork — see the repo root README for attribution). There are **no**
-source files, `node_modules`, `.env` files, or local configuration
-inside the bundle. The engine reads every runtime value — `KIMI_CODE_HOME`,
-`server.token`, user projects — from the **end user's own home directory** at
-runtime, never from the bundle, and no API keys are compiled in (the CLI reads
-credentials from the user's environment at runtime).
-
-The CI pipeline enforces this with a leak guard: after building, it scans both
-binaries and **fails the build** if they contain the build machine's workspace
-path, user profile, or any private-key marker.
-
-## CI
-
-`.github/workflows/desktop-build.yml` (repo root) builds the whole chain on
-`windows-latest` and publishes the installer as a GitHub Release artifact when
-a `desktop-v*` tag is pushed.
-
-## Notes
-
-- This package is intentionally **not** a pnpm workspace member (pure Rust;
-  `!apps/batch-translating-desktop` in `pnpm-workspace.yaml`).
-- Icons are generated by `scripts/generate-icons.ps1` (System.Drawing, no
-  external assets): a rounded ink-blue tile with 「译」.
+安装包不得包含源码、`node_modules`、本机配置、API key 或 token。CI 会扫描桌面可执行文件、sidecar 以及解包后的安装内容。本地最终验收副本放在被 Git 忽略的 `dist-desktop/`。

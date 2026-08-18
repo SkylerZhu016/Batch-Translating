@@ -1091,29 +1091,6 @@ describe('SessionEventBroadcaster', () => {
       expect(globalView.deliveries).toEqual(['immediate']);
     });
 
-    it('delivers event.session.deleted after the session scope and index are gone', async () => {
-      const globalView = collectingTarget();
-      bc.addGlobalTarget(globalView.target);
-
-      eventBus.emit({
-        type: 'event.session.deleted',
-        payload: { agentId: 'main', sessionId: 'deleted-session' },
-      });
-
-      await vi.waitFor(() => expect(globalView.envelopes).toHaveLength(1));
-      expect(globalView.envelopes[0]).toMatchObject({
-        type: 'event.session.deleted',
-        session_id: 'deleted-session',
-        payload: {
-          type: 'event.session.deleted',
-          session_id: 'deleted-session',
-          agentId: 'main',
-          sessionId: 'deleted-session',
-        },
-      });
-      expect(globalView.deliveries).toEqual(['immediate']);
-    });
-
     it('delivers work_changed to a global-only target while a subscriber drives the session', async () => {
       const lc = new FakeLifecycle();
       const main = lc.addAgent('main');

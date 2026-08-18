@@ -20,6 +20,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { PathSecurityError } from '#/tool/path-access';
+import { MEDIA_SNIFF_BYTES } from '#/agent/media/file-type';
 import type { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { stubWorkspaceContext } from '../../../../session/workspaceContext/stub-workspace-context';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -345,7 +346,7 @@ describe('ReadTool', () => {
         '1 line read from file starting from line 1. Total lines in file: 1. End of file reached.',
       ),
     );
-    expect(readBytes).not.toHaveBeenCalled();
+    expect(readBytes).toHaveBeenCalledWith('/tmp/external.txt', MEDIA_SNIFF_BYTES);
     expect(readLines).toHaveBeenCalledWith('/tmp/external.txt', { errors: 'strict' });
   });
 
@@ -391,7 +392,7 @@ describe('ReadTool', () => {
         '1 line read from file starting from line 1. Total lines in file: 1. End of file reached.',
       ),
     );
-    expect(readBytes).not.toHaveBeenCalled();
+    expect(readBytes).toHaveBeenCalledWith('/home/test/notes/today.txt', MEDIA_SNIFF_BYTES);
     expect(readLines).toHaveBeenCalledWith('/home/test/notes/today.txt', { errors: 'strict' });
   });
 
@@ -403,6 +404,76 @@ describe('ReadTool', () => {
 
     expect(result).toMatchObject({ isError: true });
     expect(result.output).toContain('sensitive-file pattern');
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('rejects image files before text decoding and points to ReadMediaFile', async () => {
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const { fs, readText } = createSpiedMapFs({
+      '/tmp/sample.png': { bytes: pngHeader },
+    });
+    const tool = new ReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, { path: '/tmp/sample.png' });
+    const output = toolContentString(result);
+
+    expect(result.isError).toBe(true);
+    expect(output).toMatch(/image file/i);
+    expect(output).toMatch(/ReadMediaFile|media/i);
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('rejects an image-extension file whose bytes are not an image as not readable', async () => {
+    const plainText = Buffer.from('this is plain ascii text, not a png');
+    const { fs, readText } = createSpiedMapFs({
+      '/tmp/fake.png': { bytes: plainText },
+    });
+    const tool = new ReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, { path: '/tmp/fake.png' });
+    const output = toolContentString(result);
+
+    expect(result.isError).toBe(true);
+    expect(output).toBe(
+      '"/tmp/fake.png" is not readable as UTF-8 text. If it is an image or video, use ReadMediaFile. For other binary formats, use Bash or an MCP tool if available.',
+    );
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('rejects extensionless image files using magic-byte sniffing', async () => {
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const { fs, readText } = createSpiedMapFs({
+      '/tmp/sample': { bytes: pngHeader },
+    });
+    const tool = new ReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, { path: '/tmp/sample' });
+    const output = toolContentString(result);
+
+    expect(result.isError).toBe(true);
+    expect(output).toMatch(/image file/i);
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('rejects video files before text decoding', async () => {
+    const mp4Header = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x18]),
+      Buffer.from('ftyp'),
+      Buffer.from('mp42'),
+      Buffer.from([0x00, 0x00, 0x00, 0x00]),
+      Buffer.from('mp42isom'),
+    ]);
+    const { fs, readText } = createSpiedMapFs({
+      '/tmp/sample.mp4': { bytes: mp4Header },
+    });
+    const tool = new ReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, { path: '/tmp/sample.mp4' });
+    const output = toolContentString(result);
+
+    expect(result.isError).toBe(true);
+    expect(output).toMatch(/video file/i);
+    expect(output).toMatch(/ReadMediaFile|media/i);
     expect(readText).not.toHaveBeenCalled();
   });
 
@@ -418,7 +489,7 @@ describe('ReadTool', () => {
 
     expect(result.isError).toBe(true);
     expect(output).toBe(
-      '"/tmp/blob.bin" is not readable as UTF-8 text.',
+      '"/tmp/blob.bin" is not readable as UTF-8 text. If it is an image or video, use ReadMediaFile. For other binary formats, use Bash or an MCP tool if available.',
     );
     expect(output).not.toContain('Python tools');
     expect(readText).not.toHaveBeenCalled();
@@ -442,7 +513,7 @@ describe('ReadTool', () => {
 
     expect(result.isError).toBe(true);
     expect(output).toBe(
-      '"/tmp/blob-with-late-nul" is not readable as UTF-8 text.',
+      '"/tmp/blob-with-late-nul" is not readable as UTF-8 text. If it is an image or video, use ReadMediaFile. For other binary formats, use Bash or an MCP tool if available.',
     );
     expect(output).not.toContain('Python tools');
   });
@@ -470,7 +541,7 @@ describe('ReadTool', () => {
 
     expect(result.isError).toBe(true);
     expect(output).toBe(
-      '"/tmp/not-utf8.txt" is not readable as UTF-8 text.',
+      '"/tmp/not-utf8.txt" is not readable as UTF-8 text. If it is an image or video, use ReadMediaFile. For other binary formats, use Bash or an MCP tool if available.',
     );
     expect(output).not.toContain('Python tools');
     expect(output).not.toContain(replacement);
@@ -530,7 +601,7 @@ describe('ReadTool', () => {
     expect(result.note).toContain(`Total lines in file: ${String(MAX_LINES + 5)}.`);
     expect(result.note).toContain(`Max ${String(MAX_LINES)} lines reached.`);
     expect(consumed).toBe(MAX_LINES + 5);
-    expect(readBytes).not.toHaveBeenCalled();
+    expect(readBytes).toHaveBeenCalledWith('/tmp/large.txt', MEDIA_SNIFF_BYTES);
     expect(readText).not.toHaveBeenCalled();
   });
 

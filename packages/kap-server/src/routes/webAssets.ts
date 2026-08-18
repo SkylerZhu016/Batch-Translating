@@ -54,17 +54,9 @@ async function serveWebAsset(
     return reply.code(404).type('text/plain; charset=utf-8').send('Not found');
   }
 
-  const isHtmlDocument = filePath.endsWith('index.html');
   return reply
     .type(mimeType(filePath))
     .header('Content-Length', String(fileInfo.size))
-    // The HTML document must revalidate on every load so a WebView/browser
-    // cache from an older engine build cannot serve a stale shell; hashed
-    // assets are content-addressed and safe to cache long-term.
-    .header(
-      'Cache-Control',
-      isHtmlDocument ? 'no-cache' : 'public, max-age=31536000, immutable',
-    )
     .send(createReadStream(filePath));
 }
 

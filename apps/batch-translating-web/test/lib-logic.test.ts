@@ -135,7 +135,7 @@ describe('bounded Web trace', () => {
 
   it('never copies prompt, WebSocket, or console content from the full debug trace', () => {
     vi.stubGlobal('location', { search: '?debug=1' });
-    const promptSecret = 'PROMPT_SECRET_9fdb1a';
+    const promptContent = 'PROMPT_CONTENT_MUST_NOT_ENTER_TRACE_9fdb1a';
     const wsSecret = 'WS_PAYLOAD_SECRET_b84c7e';
     const consoleSecret = 'CONSOLE_SECRET_a2d693';
 
@@ -144,7 +144,7 @@ describe('bounded Web trace', () => {
       path: '/sessions/sess_1/prompts',
       url: 'http://daemon.test/api/v1/sessions/sess_1/prompts',
       requestId: 'req_1',
-      body: { prompt: promptSecret },
+      body: { prompt: promptContent },
     });
     traceWsIn({
       type: 'event',
@@ -167,16 +167,16 @@ describe('bounded Web trace', () => {
       sessionId: 'sess_1',
       contentCount: 1,
       mediaCount: 0,
-      text: promptSecret,
+      text: promptContent,
     });
 
     const fullDebugTrace = traceToJsonl();
-    expect(fullDebugTrace).toContain(promptSecret);
+    expect(fullDebugTrace).toContain(promptContent);
     expect(fullDebugTrace).toContain(wsSecret);
     expect(fullDebugTrace).toContain(consoleSecret);
 
     const sessionExportTrace = sessionExportTraceToJsonl();
-    expect(sessionExportTrace).not.toContain(promptSecret);
+    expect(sessionExportTrace).not.toContain(promptContent);
     expect(sessionExportTrace).not.toContain(wsSecret);
     expect(sessionExportTrace).not.toContain(consoleSecret);
     expect(JSON.parse(sessionExportTrace)).toEqual({

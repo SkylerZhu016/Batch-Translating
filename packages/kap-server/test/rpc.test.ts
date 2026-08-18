@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +10,7 @@ import {
   IAgentShellCommandService,
   IAppendLogStore,
   IEventService,
+  IPluginService,
   ISessionIndex,
   ISessionMetadata,
   ISessionLifecycleService,
@@ -490,6 +491,52 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     expect(body.code).toBe(40920);
     expect(body.msg).toBe('Goals are only supported by the main agent');
+  });
+
+  it('lists and installs plugins through RPC', async () => {
+    const pluginRoot = await mkdtemp(join(tmpdir(), 'server-v2-plugin-source-'));
+    try {
+      await writeFile(join(pluginRoot, 'deploy.md'), '---\ndescription: Deploy\n---\n\nDeploy body', 'utf8');
+      await writeFile(
+        join(pluginRoot, 'kimi.plugin.json'),
+        JSON.stringify({ name: 'rpc-plugin', commands: ['./deploy.md'] }),
+        'utf8',
+      );
+
+      const installed = await call<{ id: string }>('POST', rpc('core', IPluginService, 'installPlugin'), { source: pluginRoot });
+      expect(installed.body.code).toBe(0);
+      expect(installed.body.data.id).toBe('rpc-plugin');
+
+      const listed = await call<readonly { id: string; state: string }[]>('GET', rpc('core', IPluginService, 'listPlugins'));
+      expect(listed.body.code).toBe(0);
+      expect(listed.body.data).toEqual([
+        expect.objectContaining({ id: 'rpc-plugin', state: 'ok' }),
+      ]);
+
+      const info = await call<{ id: string }>('POST', rpc('core', IPluginService, 'getPluginInfo'), { id: 'rpc-plugin' });
+      expect(info.body.code).toBe(0);
+      expect(info.body.data.id).toBe('rpc-plugin');
+
+      const commands = await call<readonly { pluginId: string; name: string }[]>(
+        'GET',
+        rpc('core', IPluginService, 'listPluginCommands'),
+      );
+      expect(commands.body.code).toBe(0);
+      expect(commands.body.data).toEqual([
+        expect.objectContaining({ pluginId: 'rpc-plugin', name: 'deploy' }),
+      ]);
+
+      const sessionId = await createSession(home as string);
+      await createMainAgent(sessionId);
+      const activated = await call<null>(
+        'POST',
+        rpc('agent', IAgentRPCService, 'activatePluginCommand', { sid: sessionId, aid: 'main' }),
+        { pluginId: 'rpc-plugin', commandName: 'deploy', args: 'prod' },
+      );
+      expect(activated.body.code).toBe(0);
+    } finally {
+      await rm(pluginRoot, { recursive: true, force: true });
+    }
   });
 
   it('returns 40401 when the agent does not exist', async () => {

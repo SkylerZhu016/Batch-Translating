@@ -19,7 +19,7 @@
 import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { StepRequest, type StepRequestOptions, type TurnSeed } from '#/agent/loop/stepRequest';
-
+import { gateImageFormatParts } from '#/agent/media/image-compress';
 import type { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 
 abstract class UserMessageStepRequest extends StepRequest {
@@ -37,7 +37,7 @@ abstract class UserMessageStepRequest extends StepRequest {
     this.message = {
       ...message,
       id: this.ownerPromptId,
-      content: message.content,
+      content: gateImageFormatParts(message.content),
     };
   }
 

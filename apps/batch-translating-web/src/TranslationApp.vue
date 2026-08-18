@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { initServerAuth, onAuthRequired } from './api/daemon/serverAuth';
+import { onAuthRequired } from './api/daemon/serverAuth';
 import type { AppConfig, AppTask } from './api/types';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
 import ConfigureProviderDialog from './components/dialogs/ConfigureProviderDialog.vue';
@@ -58,11 +58,6 @@ import type {
   WorkflowOptions,
 } from './translation/types';
 
-// The server credential must be hydrated before the client performs its first
-// REST or WebSocket request. This preserves Kimi Web's fragment-token flow in
-// the translation-specific shell.
-initServerAuth();
-
 const client = useKimiWebClient();
 const runner = client;
 const appearance = useAppearance();
@@ -117,6 +112,7 @@ const createError = ref<string | undefined>();
 const correction = ref('');
 const correctionSubmitting = ref(false);
 const settingsSaving = ref(false);
+const diagnosticsExporting = ref(false);
 
 const REQUIRED_TOOLS = ['Read', 'Write', 'Bash', 'AgentSwarm'] as const;
 const SETTINGS_STORAGE_KEY = 'batch-translating.settings';
@@ -259,6 +255,13 @@ const selectedEntry = computed<ProjectSession | null>(() => {
 });
 
 const selectedProject = computed(() => selectedEntry.value?.project ?? null);
+
+const diagnosticSessionId = computed(() =>
+  selectedEntry.value?.sessionId
+  || client.activeSessionId.value
+  || projectSessions.value[0]?.sessionId
+  || '',
+);
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -699,6 +702,17 @@ async function saveSettings(): Promise<void> {
   }
 }
 
+async function exportDiagnostics(): Promise<void> {
+  const sessionId = diagnosticSessionId.value;
+  if (!sessionId || diagnosticsExporting.value) return;
+  diagnosticsExporting.value = true;
+  try {
+    await client.exportSession(sessionId);
+  } finally {
+    diagnosticsExporting.value = false;
+  }
+}
+
 async function openProviders(): Promise<void> {
   providersLoading.value = true;
   providersUnavailable.value = false;
@@ -969,6 +983,16 @@ function setUiFont(value: string): void {
           <section class="translation-advanced">
             <h2>{{ t('translation.settings.promptTitle') }}</h2>
             <p>{{ t('translation.settings.promptHint') }}</p>
+            <h2>{{ t('translation.settings.diagnosticsTitle') }}</h2>
+            <p>{{ t('translation.settings.diagnosticsHint') }}</p>
+            <Button
+              variant="secondary"
+              :loading="diagnosticsExporting"
+              :disabled="!diagnosticSessionId"
+              @click="exportDiagnostics"
+            >
+              {{ t('header.exportSession') }}
+            </Button>
           </section>
         </template>
       </TranslationSettingsView>

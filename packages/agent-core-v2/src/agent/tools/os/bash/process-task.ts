@@ -16,6 +16,11 @@ export interface ProcessTaskInfo extends AgentTaskInfoBase {
   readonly exitCode: number | null;
 }
 
+declare module '#/agent/task/types' {
+  interface AgentTaskInfoByKind {
+    readonly process: ProcessTaskInfo;
+  }
+}
 
 export type ProcessTaskOutputKind = 'stdout' | 'stderr';
 

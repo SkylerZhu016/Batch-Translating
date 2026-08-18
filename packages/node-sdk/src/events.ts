@@ -8,12 +8,15 @@ import type {
 // Event union plus shared fields/payloads used across event families.
 export type { KimiErrorPayload, Event } from '@moonshot-ai/agent-core';
 
+export { MCP_OAUTH_AUTHORIZATION_URL_TOOL_UPDATE } from '@moonshot-ai/agent-core';
+
 // Session lifecycle/status events and their status payload.
 export type {
   AgentStatusUpdatedEvent,
   SessionMetaUpdatedEvent,
   GoalUpdatedEvent,
   SkillActivatedEvent,
+  PluginCommandActivatedEvent,
   ErrorEvent,
   WarningEvent,
   UsageStatus,
@@ -46,6 +49,15 @@ export type {
   ToolCallRequest,
   ToolCallResponse,
   ToolUpdate,
+  McpOAuthAuthorizationUrlUpdateData,
+} from '@moonshot-ai/agent-core';
+
+// MCP tool-list and server status events.
+export type {
+  ToolListUpdatedEvent,
+  ToolListUpdatedReason,
+  McpServerStatusEvent,
+  McpServerStatusPayload,
 } from '@moonshot-ai/agent-core';
 
 // Approval reverse-RPC request and response/display payloads.

@@ -16,7 +16,6 @@ import {
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
-  ISessionLegacyService,
   IWorkspaceService,
   logSeed,
   resolveConfigPath,
@@ -182,53 +181,6 @@ export interface RunningServer {
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 58627;
-
-/** Session-metadata key the workbench uses for translation projects (kept in
- *  sync with `TRANSLATION_METADATA_KEY` in the web workbench). */
-const TRANSLATION_METADATA_KEY = 'batchTranslation';
-
-/**
- * Graceful-shutdown bookkeeping: mark every running translation project as
- * paused (running stage → blocked) so the next launch never shows a zombie
- * "running" project after the engine went down. Best-effort — a failure here
- * must not block the server close.
- */
-async function pauseRunningTranslationProjects(
-  core: Scope,
-  logger: ServerLogger,
-): Promise<void> {
-  try {
-    const index = core.accessor.get(ISessionIndex);
-    const legacy = core.accessor.get(ISessionLegacyService);
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await index.listRecent({ limit: 200, before: cursor });
-      for (const summary of page.items) {
-        const raw = summary.custom?.[TRANSLATION_METADATA_KEY];
-        if (typeof raw !== 'object' || raw === null) continue;
-        const project = raw as { status?: string; stages?: Array<{ status?: string }> };
-        if (project.status !== 'running') continue;
-        const pausedProject = {
-          ...project,
-          status: 'paused',
-          stages: (project.stages ?? []).map((stage) =>
-            stage.status === 'running'
-              ? { ...stage, status: 'blocked', lastError: 'Paused on app exit' }
-              : stage,
-          ),
-        };
-        await legacy.updateProfile(summary.id, {
-          metadata: { [TRANSLATION_METADATA_KEY]: pausedProject },
-        });
-        logger.info({ sessionId: summary.id }, 'paused translation project on shutdown');
-      }
-      if (page.nextCursor === undefined || page.items.length === 0) break;
-      cursor = page.nextCursor;
-    }
-  } catch (err) {
-    logger.warn({ err }, 'failed to pause translation projects on shutdown');
-  }
-}
 
 export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
   const host = opts.host ?? DEFAULT_HOST;
@@ -539,19 +491,21 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   await registerApiV1Routes(app, core, {
     serverVersion,
+    serverId: registration.serverId,
+    engineRuntime: () => {
+      const address = app.server.address();
+      const actualPort =
+        typeof address === 'object' && address !== null ? address.port : port;
+      const displayHost = host.includes(':') ? `[${host}]` : host;
+      return { origin: `http://${displayHost}:${actualPort}`, port: actualPort };
+    },
     hostIdentity: opts.hostIdentity,
     debugEndpoints,
     enableShutdown,
     enableTerminals,
     guiStore,
     onShutdown: () => {
-      // The workbench's translation projects persist their status in session
-      // metadata. A shutdown (exit button, tray exit, launcher stop) must
-      // never leave a project stuck in "running" — mark them paused first so
-      // the next launch resumes cleanly instead of showing a zombie run.
-      void pauseRunningTranslationProjects(core, logger).finally(() => {
-        close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
-      });
+      void close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
     },
     connectionRegistry,
     broadcaster,

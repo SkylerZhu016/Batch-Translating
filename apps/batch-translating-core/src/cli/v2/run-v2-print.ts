@@ -29,7 +29,6 @@ import {
   IBootstrapService,
   IConfigService,
   IEventBus,
-  IOAuthToolkit,
   ISessionCronService,
   ISessionIndex,
   ISessionLifecycleService,
@@ -39,7 +38,6 @@ import {
   PRINT_WAIT_CEILING_S_DEFAULT,
   applyPrintModeConfigDefaults,
   bootstrap,
-  createCloudAppender,
   ensureMainAgent,
   resumeSessionById,
   logSeed,
@@ -56,12 +54,11 @@ import {
   type PrintBackgroundMode,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
-import { createKimiDefaultHeaders, createKimiDeviceId } from '@moonshot-ai/kimi-code-oauth';
+import { createKimiDefaultHeaders } from '@moonshot-ai/kimi-code-oauth';
 import { resolve } from 'pathe';
 
 import {
   CLI_SHUTDOWN_TIMEOUT_MS,
-  CLI_USER_AGENT_PRODUCT,
   PROMPT_CLEANUP_TIMEOUT_MS,
 } from '#/constant/app';
 
@@ -92,7 +89,6 @@ import {
   writeResumeHint,
 } from '../prompt-render';
 
-const PROMPT_UI_MODE = 'print';
 /** Re-check `goalActive` at least this often while waiting for goal turns. */
 const GOAL_WAIT_POLL_MS = 250;
 /**
@@ -107,7 +103,6 @@ export async function runV2Print(
   version: string,
   io: PromptRunIO = {},
 ): Promise<void> {
-  const startedAt = Date.now();
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
   const promptProcess = io.process ?? process;
@@ -117,12 +112,6 @@ export async function runV2Print(
   writeExperimentalVersion(version, outputFormat, stdout, stderr);
 
   const homeDir = resolveKimiHome();
-  let firstLaunch = false;
-  const deviceId = createKimiDeviceId(homeDir, {
-    onFirstLaunch: () => {
-      firstLaunch = true;
-    },
-  });
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
   const identity = createKimiCodeHostIdentity(version);
   const hostHeaders = createKimiDefaultHeaders({ homeDir, ...identity });
@@ -145,8 +134,6 @@ export async function runV2Print(
     },
     [...logSeed(logging)],
   );
-  const auth = app.accessor.get(IOAuthToolkit);
-
   const configService = app.accessor.get(IConfigService);
   await configService.ready;
   // Print-mode config defaults (task timeouts / loop step cap / subagent
@@ -154,12 +141,6 @@ export async function runV2Print(
   // user left unset are filled, in the memory layer.
   await applyPrintModeConfigDefaults(configService);
   const defaultModel = configService.get<string>('defaultModel') ?? undefined;
-  let telemetryEnabled = true;
-  try {
-    telemetryEnabled = configService.get('telemetry') !== false;
-  } catch {
-    telemetryEnabled = true;
-  }
   for (const diagnostic of configService.diagnostics()) {
     if (diagnostic.severity === 'warning') {
       stderr.write(`Warning: ${diagnostic.message}\n`);
@@ -187,31 +168,14 @@ export async function runV2Print(
   removeTerminationCleanup = installPromptTerminationCleanup(promptProcess, cleanup);
 
   try {
-    // Install the appender BEFORE resolving the session: `session_started` and
-    // `session_load_failed` fire inside create()/resume(), so an appender wired
-    // up only after resolveNativeSession() would drop them to the null appender.
-    // The model below is the best known up front; a resumed session's real
-    // model is reconciled via setContext once resolved.
+    // Keep the null appender installed. Batch Translating deliberately does
+    // not send agent activity to the upstream Kimi telemetry endpoint.
     telemetryService = app.accessor.get(ITelemetryService);
-    if (telemetryEnabled) {
-      telemetryService.setAppender(
-        createCloudAppender(app.accessor, {
-          deviceId,
-          appName: CLI_USER_AGENT_PRODUCT,
-          uiMode: PROMPT_UI_MODE,
-          model: opts.model ?? defaultModel,
-          getAccessToken: async () => (await auth.getCachedAccessToken()) ?? null,
-        }),
-      );
-    }
 
     const resolved = await resolveNativeSession(app, opts, workDir, defaultModel, stderr);
     restorePermission = resolved.restorePermission;
 
     telemetryService.setContext({ sessionId: resolved.session.id, model: resolved.telemetryModel });
-    if (firstLaunch) {
-      telemetryService.track2('first_launch');
-    }
 
     const goalCreate = parseHeadlessGoalCreate(opts.prompt!);
     if (goalCreate !== undefined) {
@@ -238,9 +202,6 @@ export async function runV2Print(
     }
     writeResumeHint(resolved.session.id, outputFormat, stdout, stderr);
 
-    telemetryService.withContext({ sessionId: resolved.session.id }).track2('exit', {
-      duration_ms: Date.now() - startedAt,
-    });
   } finally {
     await cleanup();
   }
@@ -337,7 +298,7 @@ async function resolveNativeSession(
     if (target.cwd !== undefined && resolve(target.cwd) !== resolve(workDir)) {
       stderr.write(
         `Session "${opts.session}" was created under a different directory.\n` +
-          `  cd "${target.cwd}" && kimi -r ${opts.session}\n\n`,
+          `  cd "${target.cwd}" && batch-translating -r ${opts.session}\n\n`,
       );
       throw new Error(`Session "${opts.session}" was created under a different directory.`);
     }

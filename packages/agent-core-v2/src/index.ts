@@ -175,10 +175,22 @@ export { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/inte
 export { resolveAgentPath } from '#/workspace/workspaceAgentProfileLoader/internal/paths';
 export * from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
 export * from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoaderService';
+export * from '#/app/plugin/types';
+export * from '#/app/plugin/commands';
+export * from '#/app/plugin/manifest';
+export * from '#/app/plugin/store';
+export * from '#/app/plugin/source';
+export * from '#/app/plugin/github-resolver';
+export * from '#/app/plugin/archive';
+export * from '#/app/plugin/manager';
+export * from '#/app/plugin/plugin';
+export * from '#/app/plugin/pluginService';
 export * from '#/app/capability/capability';
 export * from '#/app/capability/capabilityService';
 export * from '#/app/capability/errors';
 export * from '#/app/capability/types';
+export * from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
+export * from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
 
 export type { SkillSource } from '#/app/skillCatalog/types';
 export * from '#/agent/tools/skill/skill';
@@ -212,7 +224,7 @@ export * from '#/workspace/workspaceSkillCatalog/workspaceSkillCatalogService';
 export * from '#/workspace/workspaceSkillCatalog/extraFileSkillSource';
 export * from '#/workspace/workspaceSkillCatalog/explicitFileSkillSource';
 export * from '#/workspace/workspaceSkillCatalog/rootFileSkillSource';
-
+export * from '#/workspace/workspaceSkillCatalog/pluginSkillSource';
 export * from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoader';
 export * from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoaderService';
 export * from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoader';
@@ -321,6 +333,18 @@ import '#/session/agentLifecycle/profile/profiles';
 export * from '#/session/agentLifecycle/agentLifecycle';
 export * from '#/session/agentLifecycle/agentLifecycleService';
 export * from '#/session/agentLifecycle/mainAgent';
+export * from '#/session/mcp/sessionMcpHandle';
+import '#/app/mcpConfig/configSection';
+export {
+  MCP_SECTION,
+  McpSectionSchema,
+  type McpSection,
+} from '#/app/mcpConfig/configSection';
+export * from '#/app/mcpConfig/oauthStore';
+export * from '#/workspace/workspaceMcpConfig/workspaceMcpConfig';
+export * from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
+export * from '#/workspace/workspaceMcp/workspaceMcp';
+export * from '#/workspace/workspaceMcp/workspaceMcpService';
 export * from '#/session/subagent/subagent';
 export * from '#/session/subagent/subagentService';
 import '#/session/subagent/flag';
@@ -431,6 +455,33 @@ export * from '#/app/authLegacy/authLegacy';
 export * from '#/app/authLegacy/authLegacyService';
 export * from '#/app/file/fileService';
 export * from '#/app/file/fileServiceImpl';
+export {
+  buildImageCompressionCaption,
+  compressBase64ForModel,
+  compressImageForModel,
+  gateImageFormatParts,
+  IMAGE_BYTE_BUDGET,
+  MAX_IMAGE_EDGE_PX,
+  READ_IMAGE_BYTE_BUDGET,
+  resolveMaxImageEdgePx,
+  resolveReadImageByteBudget,
+  type ImageCompressionTelemetry,
+} from '#/agent/media/image-compress';
+export {
+  MODEL_ACCEPTED_IMAGE_MIMES,
+  buildImageConversionGuidance,
+  buildUnsupportedImageNotice,
+  decodeBase64Prefix,
+  isModelAcceptedImageMime,
+  normalizeImageMime,
+  parseImageDataUrl,
+  resolveEffectiveImageMime,
+  unsupportedImageMimeFromUrl,
+} from '#/agent/media/image-format-policy';
+export {
+  persistOriginalImage,
+  sessionMediaOriginalsDir,
+} from '#/agent/media/image-originals';
 export * from '#/app/edit/fileEdit';
 export * from '#/app/edit/fileEditService';
 export * from '#/app/edit/editService';
@@ -469,9 +520,8 @@ export * from '#/agent/tokenCounting/tokenCountingOps';
 export * from '#/agent/tokenCounting/tokenCountingService';
 export * from '#/agent/contextInjector/contextInjector';
 export * from '#/agent/contextInjector/contextInjectorService';
-export * from '#/agent/shellCommand/shellCommand';
-export * from '#/agent/shellCommand/shellCommandService';
-
+export * from '#/agent/plugin/agentPlugin';
+export * from '#/agent/plugin/agentPluginService';
 import '#/agent/externalHooks/configSection';
 export * from '#/agent/externalHooks/externalHooks';
 export * from '#/agent/externalHooks/externalHooksService';
@@ -492,7 +542,19 @@ export * from '#/agent/loop/loopContinuationService';
 export * from '#/agent/interruptionReminder/interruptionReminder';
 export * from '#/agent/interruptionReminder/interruptionReminderService';
 export * from '#/agent/interruptionReminder/interruptionReminderOps';
-
+export * from '#/agent/mcp/mcp';
+export * from '#/agent/mcp/mcpService';
+export * from '#/agent/mcp/mcpDiscoveryOps';
+export * from '#/mcpCore/config-schema';
+export * from '#/agent/media/mediaTools';
+export * from '#/agent/media/mediaToolsRegistrar';
+export * from '#/agent/media/registerMediaTools';
+export * from '#/agent/media/kimiFileUrl';
+export * from '#/agent/media/videoUpload';
+export * from '#/agent/media/videoResolver';
+export * from '#/agent/media/videoResolverService';
+import '#/agent/media/configSection';
+export * from '#/agent/media/imageConfigBridge';
 import '#/agent/permissionMode/configSection';
 export * from '#/agent/permissionMode/permissionMode';
 export * from '#/agent/permissionMode/permissionModeService';
@@ -511,7 +573,8 @@ export * from '#/agent/prompt/promptService';
 export * from '#/agent/replayBuilder/types';
 export * from '#/agent/undo/undo';
 export * from '#/agent/undo/undoService';
-
+export * from '#/agent/shellCommand/shellCommand';
+export * from '#/agent/shellCommand/shellCommandService';
 export * from '#/agent/rpc/rpc';
 export * from '#/agent/rpc/rpcService';
 export * from '#/agent/rpc/prompt-metadata';

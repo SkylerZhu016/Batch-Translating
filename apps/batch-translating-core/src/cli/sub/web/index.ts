@@ -1,13 +1,13 @@
 /**
- * `kimi web` — run the local Kimi server (REST + WebSocket + web UI) in the
+ * `batch-translating web` — run the local Kimi server (REST + WebSocket + web UI) in the
  * foreground and open the web UI in the default browser.
  *
- * The command itself is the runner (`kimi web` = start the server + open the
+ * The command itself is the runner (`batch-translating web` = start the server + open the
  * browser; `--no-open` to skip). The server stays attached to the terminal
  * and stops with Ctrl+C, so there is no kill/ps subcommand; the only
  * management subcommand is `web rotate-token` (rotate the home-wide bearer
  * token). Servers left behind by pre-0.28.0 builds are cleaned up with
- * `kimi server kill`.
+ * `batch-translating server kill`.
  */
 
 import type { Command } from 'commander';

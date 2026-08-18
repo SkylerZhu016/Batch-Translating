@@ -275,6 +275,8 @@ export default {
       agentSwarm: 'AgentSwarm',
     },
     promptTitle: '翻译提示词',
+    diagnosticsTitle: '脱敏诊断包',
+    diagnosticsHint: '导出当前会话的运行身份、健康状态和脱敏事件记录；不会包含书稿正文、原始会话、配置文件或访问密钥。',
     promptHint: '详细且带版本的提示词会覆盖 EPUB 压缩包、超长章节、歧义、术语、重试、补丁、检查点和完整性校验。',
     configTitle: '配置',
     configHint: '保存前会先校验，并写入与配置文件相同的设置来源。',

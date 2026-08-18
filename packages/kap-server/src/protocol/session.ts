@@ -69,10 +69,8 @@ export type Session = z.infer<typeof sessionSchema>;
 
 export const sessionCreateSchema = z.object({
   title: z.string().min(1).optional(),
-  metadata: sessionMetadataSchema.partial().optional(),
+  metadata: sessionMetadataSchema.optional(),
   agent_config: sessionAgentConfigPartialSchema.optional(),
-  /** Bind the main agent to this profile at creation time. */
-  agent_profile: z.string().min(1).optional(),
   workspace_id: workspaceIdSchema.optional(),
 });
 

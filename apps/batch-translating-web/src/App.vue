@@ -39,7 +39,7 @@ import { useIsMobile } from './composables/useIsMobile';
 import { openDialogCount } from './composables/dialogStack';
 import type { SwarmMember } from './composables/swarmGroups';
 import ServerAuthDialog from './components/ServerAuthDialog.vue';
-import { initServerAuth, onAuthRequired } from './api/daemon/serverAuth';
+import { onAuthRequired } from './api/daemon/serverAuth';
 import type { AppConfig, ThinkingLevel } from './api/types';
 import { commitLevel, effectiveThinkingLevel, segmentsFor } from './lib/modelThinking';
 import { stripSkillPrefix } from './lib/slashCommands';
@@ -49,9 +49,6 @@ import Icon from './components/ui/Icon.vue';
 import InternalBuildBanner from './components/InternalBuildBanner.vue';
 import { isMacosDesktop } from './lib/desktopFlag';
 
-// Hydrate the server-transport credential (fragment token or localStorage)
-// BEFORE the client connects, so the first REST/WS calls already carry it.
-initServerAuth();
 // Stays false until the server actually rejects us with 401/40101. Starting
 // from "no credential ⇒ prompt" flashed the token dialog for a frame in
 // `--dangerous-bypass-auth` mode, before /meta had advertised the bypass.

@@ -15,7 +15,11 @@ import {
   titleFromPromptMetadataText,
 } from '#/agent/prompt/promptMetadataText';
 
-import type { ActivateSkillPayload, PromptPayload } from './core-api';
+import type {
+  ActivatePluginCommandPayload,
+  ActivateSkillPayload,
+  PromptPayload,
+} from './core-api';
 
 export { promptMetadataTextFromContentParts, titleFromPromptMetadataText };
 
@@ -30,6 +34,15 @@ export function promptMetadataTextFromSkill(payload: ActivateSkillPayload): stri
   );
 }
 
+export function promptMetadataTextFromPluginCommand(
+  payload: ActivatePluginCommandPayload,
+): string | undefined {
+  const args = payload.args?.trim();
+  const command = `/${payload.pluginId}:${payload.commandName}`;
+  return promptMetadataTextFromText(
+    args === undefined || args.length === 0 ? command : `${command} ${args}`,
+  );
+}
 
 export function isUntitled(title: string | undefined): boolean {
   return title === undefined || title.trim().length === 0 || title === 'New Session';

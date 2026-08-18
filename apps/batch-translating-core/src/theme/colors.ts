@@ -1,7 +1,7 @@
 /**
  * Minimal terminal color palette for the web server's console output.
  *
- * Values match the dark theme of the removed interactive TUI so `kimi web`
+ * Values match the dark theme of the removed interactive TUI so `batch-translating web`
  * device-code / startup messages keep the same look.
  */
 export const darkColors = {

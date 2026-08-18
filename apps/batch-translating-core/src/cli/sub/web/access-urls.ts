@@ -1,7 +1,7 @@
 /**
  * Build the clickable/copyable access URLs for the running server.
  *
- * Shared by the `kimi web` ready banner and `kimi web rotate-token` so both
+ * Shared by the `batch-translating web` ready banner and `batch-translating web rotate-token` so both
  * show the same Local/Network links. When a token is known it rides in the
  * `#token=` fragment (never sent to the server, so never logged), letting a
  * user open the link on another device and be authenticated automatically.

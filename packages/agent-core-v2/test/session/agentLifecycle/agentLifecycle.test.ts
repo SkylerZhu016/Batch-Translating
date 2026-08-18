@@ -1,8 +1,8 @@
 /**
- * Scenario: session-owned agent creation, persistence, and teardown.
+ * Scenario: session-owned agent creation, persistence, and MCP wiring.
  *
  * Exercises `AgentLifecycleService` through its DI contract with controlled
- * persistence boundaries, including completion ordering.
+ * persistence and MCP boundaries, including completion ordering.
  * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
  * test/session/agentLifecycle/agentLifecycle.test.ts`.
  */
@@ -17,6 +17,8 @@ import { Event } from '#/_base/event';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import '#/agent/profile/profileService';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
+import { IAgentMcpService } from '#/agent/mcp/mcp';
+import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import '#/agent/permissionMode/permissionModeOps';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -24,9 +26,13 @@ import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
+import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
+import { McpOAuthService } from '#/mcpCore/oauth/service';
+import { createMcpOAuthStore } from '#/app/mcpConfig/oauthStore';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { SessionSubagentService } from '#/session/subagent/subagentService';
+import '#/agent/mcp/mcpService';
 import '#/wire/wireService';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
@@ -35,7 +41,9 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import '#/app/event/eventBusService';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { ILogService } from '#/_base/log/log';
+import { IPluginService } from '#/app/plugin/plugin';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -55,7 +63,9 @@ import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionT
 import { _clearAgentToolContributionsForTests } from '#/agent/toolRegistry/toolContribution';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import '#/agent/toolActivation/toolActivationService';
+import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
 const noopLog = {
@@ -69,6 +79,26 @@ const noopLog = {
   debug: () => {},
   child: () => noopLog,
 } as unknown as ILogService;
+
+const pluginServiceStub = {
+  _serviceBrand: undefined,
+  onDidReload: () => ({ dispose: () => {} }),
+  listPlugins: async () => [],
+  installPlugin: async () => ({ id: '' }) as never,
+  setPluginEnabled: async () => {},
+  setPluginMcpServerEnabled: async () => {},
+  removePlugin: async () => {},
+  reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
+  getPluginInfo: async () => {
+    throw new Error('getPluginInfo is not used by these tests');
+  },
+  listPluginCommands: async () => [],
+  checkUpdates: async () => [],
+  pluginSkillRoots: async () => [],
+  enabledSessionStarts: async () => [],
+  enabledMcpServers: async () => ({}),
+  enabledHooks: async () => [],
+} as unknown as IPluginService;
 
 function recordingAppendLog(initial: readonly WireRecord[] = []): {
   readonly appended: WireRecord[];
@@ -173,6 +203,7 @@ describe('AgentLifecycleService', () => {
       workDir: '/tmp/kimi-agentLifecycle-work',
       additionalDirs: [],
     } as unknown as ISessionWorkspaceContext);
+    ix.stub(IPluginService, pluginServiceStub);
     ix.stub(IConfigService, {
       ready: Promise.resolve(),
       get: (() => undefined) as IConfigService['get'],
@@ -197,12 +228,18 @@ describe('AgentLifecycleService', () => {
     };
     ix.stub(IAtomicDocumentStore, atomicDocsStore);
     ix.stub(ILogService, noopLog);
+    ix.stub(IAgentPluginService, {
+      _serviceBrand: undefined,
+    });
     ix.stub(IAgentToolRegistryService, {
       _serviceBrand: undefined,
       register: () => ({ dispose: () => {} }),
       resolve: () => undefined,
       list: () => [],
     } as unknown as IAgentToolRegistryService);
+    ix.stub(IAgentMediaToolsRegistrar, {
+      _serviceBrand: undefined,
+    } as IAgentMediaToolsRegistrar);
     beforeExecuteListeners = 0;
     didExecuteHookIds = [];
     ix.stub(IAgentToolExecutorService, {
@@ -318,6 +355,18 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       seedInjected: () => {},
     });
+    // The session's MCP readiness arrives through the seeded
+    // `ISessionMcpHandle`; the default handle carries an OAuth-wired manager
+    // over the test atomic document store so the agent mirror's OAuth
+    // surface stays exercisable.
+    ix.stub(ISessionMcpHandle, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      connectionManager: new McpConnectionManager({
+        log: noopLog,
+        oauthService: new McpOAuthService({ store: createMcpOAuthStore(atomicDocsStore) }),
+      }),
+    } satisfies ISessionMcpHandle);
     stopAllOnExit = vi.fn(async () => []);
     ix.stub(IAgentTaskService, {
       _serviceBrand: undefined,
@@ -571,6 +620,52 @@ describe('AgentLifecycleService', () => {
     svc.broadcastPermissionMode('auto');
 
     expect(permissionModeSetMode.mock.calls).toEqual([['auto']]);
+  });
+
+  it('wires MCP OAuth credentials through the session atomic document store', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const main = await svc.create({ agentId: 'main' });
+
+    const mcp = main.accessor.get(IAgentMcpService);
+    const oauth = mcp.oauthService;
+    if (oauth === undefined) throw new Error('Expected session MCP manager to provide OAuth');
+    const provider = oauth.getProvider('linear', 'https://linear.example.com/mcp');
+    await provider.ready;
+
+    await provider.saveTokens({
+      access_token: 'session-token',
+      token_type: 'Bearer',
+    } satisfies OAuthTokens);
+
+    const tokenEntries = [...atomicDocs.entries()].filter(
+      ([key]) => key.startsWith('credentials/mcp/') && key.endsWith('-tokens.json'),
+    );
+    expect(tokenEntries).toEqual([
+      [
+        expect.stringMatching(/^credentials\/mcp\/linear-[a-f0-9]{24}-tokens\.json$/),
+        { access_token: 'session-token', token_type: 'Bearer' },
+      ],
+    ]);
+  });
+
+  it('returns an agent without waiting for the MCP handle readiness', async () => {
+    let releaseReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      releaseReady = resolve;
+    });
+    ix.stub(ISessionMcpHandle, {
+      _serviceBrand: undefined,
+      ready,
+      connectionManager: new McpConnectionManager({ log: noopLog }),
+    } satisfies ISessionMcpHandle);
+
+    const svc = ix.get(IAgentLifecycleService);
+    // MCP connects in the background; the agent's LLM steps wait on the
+    // seeded readiness promise instead of agent creation.
+    const handle = await svc.create({ agentId: 'main' });
+    expect(handle.id).toBe('main');
+
+    releaseReady();
   });
 
   it('exposes the in-flight handle and joins it after bootstrap', async () => {

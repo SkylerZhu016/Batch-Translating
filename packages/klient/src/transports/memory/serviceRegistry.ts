@@ -18,6 +18,7 @@ import {
   IOAuthService,
 } from '@moonshot-ai/agent-core-v2/app/auth/auth';
 import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
+import { IPluginService } from '@moonshot-ai/agent-core-v2/app/plugin/plugin';
 import { ICapabilityService } from '@moonshot-ai/agent-core-v2/app/capability/capability';
 import { IBootstrapService } from '@moonshot-ai/agent-core-v2/app/bootstrap/bootstrap';
 import { IEventService } from '@moonshot-ai/agent-core-v2/app/event/event';
@@ -36,6 +37,7 @@ import { IAgentProfileService } from '@moonshot-ai/agent-core-v2/agent/profile/p
 import { IAgentShellCommandService } from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommand';
 import { IAgentTaskService } from '@moonshot-ai/agent-core-v2/agent/task/task';
 import { IAgentUsageService } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
+import { IAgentMcpService } from '@moonshot-ai/agent-core-v2/agent/mcp/mcp';
 import { IAgentFullCompactionService } from '@moonshot-ai/agent-core-v2/agent/fullCompaction/fullCompaction';
 
 /** Wire service name (decorator id string) → token. */
@@ -50,6 +52,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   oauthService: IOAuthService,
   authSummaryService: IAuthSummaryService,
   flagService: IFlagService,
+  pluginService: IPluginService,
   capabilityService: ICapabilityService,
   hostFolderBrowser: IHostFolderBrowser,
   bootstrapService: IBootstrapService,
@@ -67,6 +70,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentUsageService: IAgentUsageService,
   agentPlanService: IAgentPlanService,
   agentTaskService: IAgentTaskService,
+  agentMcpService: IAgentMcpService,
   agentFullCompactionService: IAgentFullCompactionService,
 };
 

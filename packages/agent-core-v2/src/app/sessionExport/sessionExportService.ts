@@ -114,6 +114,8 @@ export class SessionExportService implements ISessionExportService {
       id: summary.id,
       title: summary.title,
       workspaceDir: workspace?.root,
+      createdAt: summary.createdAt,
+      updatedAt: summary.updatedAt,
       sessionDir,
     };
     const handle = this.liveSession(summary.id);
@@ -129,6 +131,8 @@ export class SessionExportService implements ISessionExportService {
         id: meta.id,
         title: meta.title,
         workspaceDir: workspace?.root,
+        createdAt: meta.createdAt,
+        updatedAt: meta.updatedAt,
         sessionDir,
       };
     } catch (error) {
@@ -198,15 +202,18 @@ export async function exportSessionDirectory(input: {
   let desktopSourceTransferred = false;
 
   try {
-    sessionLogSource = await openOptionalZipSource(sessionLogPath, input.signal);
-    if (input.request.includeGlobalLog === true && input.globalLogPath !== undefined) {
+    const redacted = input.request.redacted === true;
+    if (!redacted) {
+      sessionLogSource = await openOptionalZipSource(sessionLogPath, input.signal);
+    }
+    if (!redacted && input.request.includeGlobalLog === true && input.globalLogPath !== undefined) {
       globalSource = await openOptionalZipSource(input.globalLogPath, input.signal);
     }
-    if (input.desktopLogPath !== undefined) {
+    if (!redacted && input.desktopLogPath !== undefined) {
       desktopSource = await openOptionalZipSource(input.desktopLogPath, input.signal);
     }
-    const sessionFiles = await collectFilesRecursive(sessionDir);
-    if (sessionFiles.length === 0 && sessionLogSource === undefined) {
+    const sessionFiles = redacted ? [] : await collectFilesRecursive(sessionDir);
+    if (!redacted && sessionFiles.length === 0 && sessionLogSource === undefined) {
       throw new Error2(
         ErrorCodes.SESSION_EXPORT_NOT_FOUND,
         `Session "${input.summary.id}" has no exportable directory at "${sessionDir}"`,
@@ -214,7 +221,7 @@ export async function exportSessionDirectory(input: {
       );
     }
 
-    const sessionScan = await scanSessionWire(sessionDir, input.signal);
+    const sessionScan = redacted ? {} : await scanSessionWire(sessionDir, input.signal);
     const stableSessionLog = sessionLogSource;
     const selectedSessionFiles: SessionZipEntry[] = sessionFiles.filter(
       (file) => file !== sessionLogPath,
@@ -225,7 +232,8 @@ export async function exportSessionDirectory(input: {
         sessionZipEntryPath(left).localeCompare(sessionZipEntryPath(right)),
       );
     }
-    const bundledWebLog = input.webLog !== undefined;
+    const webLog = redacted ? sanitizeDiagnosticWebLog(input.webLog) : input.webLog;
+    const bundledWebLog = webLog !== undefined;
     const now = new Date();
     const baseManifest = buildExportManifest({
       summary: input.summary,
@@ -237,14 +245,16 @@ export async function exportSessionDirectory(input: {
       desktopVersion: input.request.desktopVersion,
       installSource: input.request.installSource,
       shellEnv: input.request.shellEnv,
+      redacted,
+      diagnostics: input.request.diagnostics,
     });
     const outputPath =
       input.request.outputPath !== undefined
         ? resolve(input.request.outputPath)
         : resolve(defaultExportZipName(input.summary.id, now));
     const extras: ExtraZipEntry[] = [];
-    if (input.webLog !== undefined) {
-      extras.push({ data: Buffer.from(input.webLog, 'utf8'), target: WEB_LOG_REL });
+    if (webLog !== undefined) {
+      extras.push({ data: Buffer.from(webLog, 'utf8'), target: WEB_LOG_REL });
     }
     if (globalSource !== undefined) {
       extras.push({ source: globalSource, target: GLOBAL_LOG_REL });
@@ -289,6 +299,64 @@ export async function exportSessionDirectory(input: {
       await desktopSource.close().catch(() => {});
     }
   }
+}
+
+const DIAGNOSTIC_STRING_FIELDS = new Set([
+  'event',
+  'sessionId',
+  'status',
+  'operation',
+  'errorName',
+  'requestId',
+  'phase',
+]);
+const DIAGNOSTIC_NUMBER_FIELDS = new Set([
+  'ts',
+  'seq',
+  'durationMs',
+  'messageCount',
+  'contentCount',
+  'mediaCount',
+  'sessionCount',
+  'workspaceCount',
+  'zipBytes',
+  'errorCode',
+  'httpStatus',
+  'line',
+  'col',
+]);
+
+export function sanitizeDiagnosticWebLog(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const output: string[] = [];
+  for (const line of value.split(/\r?\n/).slice(0, 500)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue;
+    const input = parsed as Record<string, unknown>;
+    const safe: Record<string, string | number | boolean> = {};
+    for (const [key, item] of Object.entries(input)) {
+      if (DIAGNOSTIC_STRING_FIELDS.has(key) && typeof item === 'string') {
+        safe[key] = item.slice(0, 200).replaceAll(/[\r\n]/g, ' ');
+      } else if (
+        DIAGNOSTIC_NUMBER_FIELDS.has(key) &&
+        typeof item === 'number' &&
+        Number.isFinite(item)
+      ) {
+        safe[key] = item;
+      } else if (key === 'fatal' && typeof item === 'boolean') {
+        safe[key] = item;
+      }
+    }
+    if (typeof safe['event'] === 'string' && typeof safe['ts'] === 'number') {
+      output.push(JSON.stringify(safe));
+    }
+  }
+  return output.length === 0 ? undefined : output.join('\n');
 }
 
 function defaultExportZipName(sessionId: string, now: Date): string {

@@ -11,7 +11,7 @@ export default defineConfig({
     },
   },
   test: {
-    name: 'cli',
+    name: 'batch-core',
     env: {
       KIMI_LOG_LEVEL: 'off',
     },

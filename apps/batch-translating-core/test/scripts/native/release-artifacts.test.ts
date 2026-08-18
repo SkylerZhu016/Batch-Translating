@@ -107,10 +107,10 @@ describe('native release artifacts', () => {
   afterEach(() => {
     rmSync(resolve(appRoot, 'dist-native/bin', target), { recursive: true, force: true });
     rmSync(resolve(appRoot, 'dist-native/bin', windowsTarget), { recursive: true, force: true });
-    rmSync(resolve(artifactsDir, `kimi-code-${target}.zip`), { force: true });
-    rmSync(resolve(artifactsDir, `kimi-code-${target}.zip.sha256`), { force: true });
-    rmSync(resolve(artifactsDir, `kimi-code-${windowsTarget}.zip`), { force: true });
-    rmSync(resolve(artifactsDir, `kimi-code-${windowsTarget}.zip.sha256`), { force: true });
+    rmSync(resolve(artifactsDir, `batch-translating-${target}.zip`), { force: true });
+    rmSync(resolve(artifactsDir, `batch-translating-${target}.zip.sha256`), { force: true });
+    rmSync(resolve(artifactsDir, `batch-translating-${windowsTarget}.zip`), { force: true });
+    rmSync(resolve(artifactsDir, `batch-translating-${windowsTarget}.zip.sha256`), { force: true });
   });
 
   it('packages the native binary as a zip archive and checksums the archive', async () => {
@@ -123,14 +123,14 @@ describe('native release artifacts', () => {
       env: { ...process.env, KIMI_CODE_BUILD_TARGET: target },
     });
 
-    const archivePath = resolve(artifactsDir, `kimi-code-${target}.zip`);
+    const archivePath = resolve(artifactsDir, `batch-translating-${target}.zip`);
     const checksumPath = `${archivePath}.sha256`;
     expect(existsSync(archivePath)).toBe(true);
     expect(existsSync(checksumPath)).toBe(true);
     expect(zipEntryNames(archivePath)).toEqual([executableName]);
     expect(readZipEntry(archivePath, executableName).toString('utf-8')).toBe(binaryContent);
     expect(readFileSync(checksumPath, 'utf-8')).toBe(
-      `${sha256(readFileSync(archivePath))}  kimi-code-${target}.zip\n`,
+      `${sha256(readFileSync(archivePath))}  batch-translating-${target}.zip\n`,
     );
   });
 
@@ -143,7 +143,7 @@ describe('native release artifacts', () => {
       env: { ...process.env, KIMI_CODE_BUILD_TARGET: windowsTarget },
     });
 
-    const archivePath = resolve(artifactsDir, `kimi-code-${windowsTarget}.zip`);
+    const archivePath = resolve(artifactsDir, `batch-translating-${windowsTarget}.zip`);
     expect(zipEntryNames(archivePath)).toEqual([executableName, ...windowsLauncherEntries]);
     for (const entry of windowsLauncherEntries) {
       expect(readZipEntry(archivePath, entry).byteLength).toBeGreaterThan(0);

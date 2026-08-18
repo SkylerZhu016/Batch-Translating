@@ -32,17 +32,7 @@ export interface AgentTaskInfoBase {
   readonly timeoutMs?: number;
 }
 
-export interface AgentTaskInfoByKind {
-  // Legacy bash process tasks from v1 data. No new tasks of this kind are
-  // created - the Bash tool is not part of Batch Translating - but persisted
-  // v1 tasks migrate through it.
-  readonly process: AgentTaskInfoBase & {
-    readonly kind: 'process';
-    readonly command: string;
-    readonly pid: number;
-    readonly exitCode: number | null;
-  };
-}
+export interface AgentTaskInfoByKind {}
 
 export type AgentTaskKind = Extract<keyof AgentTaskInfoByKind, string>;
 

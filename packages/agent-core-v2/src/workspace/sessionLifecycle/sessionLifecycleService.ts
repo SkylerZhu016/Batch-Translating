@@ -97,7 +97,7 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
-
+import { sessionMcpHandleSeed } from '#/session/mcp/sessionMcpHandle';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
 import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
@@ -121,6 +121,7 @@ import {
 } from '#/wire/record';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
+import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
 import {
   IExplicitAgentProfileLoader,
 } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoader';
@@ -132,6 +133,10 @@ import {
 } from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoader';
 import { IWorkspaceDirs } from '#/workspace/workspaceDirs/workspaceDirs';
 import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructions';
+import {
+  IWorkspaceMcpService,
+  type ISessionMcpOverlay,
+} from '#/workspace/workspaceMcp/workspaceMcp';
 import { IWorkspaceSkillCatalog } from '#/workspace/workspaceSkillCatalog/workspaceSkillCatalog';
 import { IWorkspaceToolPolicy } from '#/workspace/workspaceToolPolicy/workspaceToolPolicy';
 
@@ -172,7 +177,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
    * directly, bypassing the handle wrapper) is shut down from the
    * service's own dispose instead — no overlay outlives the lifecycle.
    */
-
+  private readonly liveOverlays = new Map<string, ISessionMcpOverlay>();
 
   constructor(
     @IInstantiationService private readonly instantiation: IInstantiationService,
@@ -196,14 +201,25 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     private readonly explicitAgentProfileLoader: IExplicitAgentProfileLoader,
     @IUserAgentProfileLoader
     private readonly userAgentProfileLoader: IUserAgentProfileLoader,
-
+    @IPluginAgentProfileLoader
+    private readonly pluginAgentProfileLoader: IPluginAgentProfileLoader,
     @IWorkspaceInstructionsService private readonly instructions: IWorkspaceInstructionsService,
-
+    @IWorkspaceMcpService private readonly mcp: IWorkspaceMcpService,
     @IWorkspaceDirs private readonly workspaceDirs: IWorkspaceDirs,
     @IWorkspaceToolPolicy private readonly toolPolicy: IWorkspaceToolPolicy,
     @ISessionProcessRunner private readonly processRunner: ISessionProcessRunner,
   ) {
     super();
+    this._register({
+      dispose: () => {
+        // Service teardown (e.g. workspace/root scope disposal) bypasses the
+        // per-session handle wrappers — shut down every overlay still live.
+        for (const overlay of this.liveOverlays.values()) {
+          void overlay.shutdown();
+        }
+        this.liveOverlays.clear();
+      },
+    });
   }
 
   private get workspaceId(): string {
@@ -264,6 +280,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       'onWillCloseSession',
     ]);
     await this.hostEnv.ready;
+    const mcpOverlay =
+      opts.mcpServers !== undefined && Object.keys(opts.mcpServers).length > 0
+        ? this.mcp.sessionOverlay(opts.mcpServers, { stdioCwd: opts.workDir })
+        : undefined;
+    if (mcpOverlay !== undefined) {
+      this.liveOverlays.set(opts.sessionId, mcpOverlay);
+    }
     const scopeHandle = createScopedChildHandle(
       this.instantiation,
       LifecycleScope.Session,
@@ -279,14 +302,28 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             workspaceKey: workspaceId,
           }),
           ...sessionInstructionsProviderSeed(this.instructions.sessionProvider()),
-
+          ...sessionMcpHandleSeed(mcpOverlay?.handle ?? this.mcp.sessionHandle()),
           ...sessionWorkspaceInfoSeed(this.workspaceDirs.sessionInfo()),
           ...sessionToolPolicyGateSeed(this.toolPolicy.sessionGate()),
           [ISessionProcessRunner, this.processRunner],
         ],
       },
     ) as ISessionScopeHandle;
-    const handle: ISessionScopeHandle = scopeHandle;
+    const handle: ISessionScopeHandle =
+      mcpOverlay === undefined
+        ? scopeHandle
+        : {
+            ...scopeHandle,
+            dispose: () => {
+              // Delete-then-shutdown is atomic (single-threaded): the service
+              // teardown path only shuts down overlays still in the map, so a
+              // handle dispose and a service dispose can never double-shutdown.
+              if (this.liveOverlays.delete(opts.sessionId)) {
+                void mcpOverlay.shutdown();
+              }
+              scopeHandle.dispose();
+            },
+          };
     try {
       await handle.accessor.get(ISessionMetadata).ready;
       await handle.accessor.get(ISessionToolPolicy).ready;
@@ -296,6 +333,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         this.extraAgentProfileLoader.ready,
         this.explicitAgentProfileLoader.ready,
         this.userAgentProfileLoader.ready,
+        this.pluginAgentProfileLoader.ready,
       ]);
     } catch (error) {
       handle.dispose();
@@ -365,6 +403,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       sessionId,
       workDir,
       additionalDirs: opts?.additionalDirs,
+      mcpServers: opts?.mcpServers,
     });
     const agents = handle.accessor.get(IAgentLifecycleService);
     if (agents.get(MAIN_AGENT_ID) === undefined) {

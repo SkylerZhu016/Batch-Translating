@@ -10,11 +10,13 @@ import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { Emitter, Event } from '#/_base/event';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import type { Promisable, PromisifyMethods } from '#/_base/utils/types';
+import { escapeXmlAttr } from '#/_base/utils/xml-escape';
 import type { AgentTaskInfo } from '#/agent/task/task';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { AgentBlobServiceImpl } from '#/agent/blob/agentBlobServiceImpl';
 import { WorkspaceStateService } from '#/workspace/state/workspaceStateService';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { CHECKPOINTED_MODELS, type Checkpointed } from '#/agent/contextMemory/conversationTime';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
@@ -24,7 +26,9 @@ import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { CronTaskPersistenceService } from '#/app/cron/cronTaskPersistenceService';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { AgentGoalService } from '#/agent/goal/goalService';
+import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
+import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { loadAgentsMdForRoots, type LoadedAgentsMd } from '#/agent/profile/context';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { ISessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
@@ -81,6 +85,7 @@ import type { generate as kosongGenerate } from '#/kosong/contract/generate';
 import type { ChatProvider, GenerateOptions, StreamedMessage } from '#/kosong/contract/provider';
 import type { ILogger, LogContext, LogLevel } from '#/_base/log/log';
 import { ILogOptions } from '#/_base/log/logConfig';
+import type { EnabledPluginSessionStart } from '#/app/plugin/types';
 import {
   WIRE_PROTOCOL_VERSION,
   AgentTaskService,
@@ -131,6 +136,7 @@ import {
   IWorkspaceStateService,
   AgentLLMRequesterService,
   LifecycleScope,
+  AgentMcpService,
   AgentPermissionGate,
   AgentPermissionRulesService,
   AgentProfileService,
@@ -693,6 +699,18 @@ export function cronServices(): TestAgentServiceOverride {
   return sessionService(ISessionCronService, new SyncDescriptor(SessionCronServiceImpl));
 }
 
+export function mcpServices(options: {
+  readonly manager?: McpConnectionManager;
+}): TestAgentServiceOverride {
+  // `AgentMcpService` resolves the workspace's shared manager through the
+  // seeded `ISessionMcpHandle`; tests inject a fake manager by stubbing it.
+  return sessionService(ISessionMcpHandle, {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    connectionManager: options.manager!,
+  } satisfies ISessionMcpHandle);
+}
+
 export function skillServices(
   input: ISessionSkillCatalog | SkillCatalog,
 ): TestAgentServiceOverride {
@@ -972,6 +990,30 @@ class ConfigBackedModelCatalog extends ModelCatalog {
   }
 }
 
+function renderPluginSessionStartReminder(
+  sessionStarts: readonly EnabledPluginSessionStart[],
+  catalog: SkillCatalog,
+  log?: { warn(message: string, payload?: unknown): void },
+): string | undefined {
+  if (sessionStarts.length === 0) return undefined;
+  const blocks: string[] = [];
+  for (const sessionStart of sessionStarts) {
+    const skill = catalog.getPluginSkill(sessionStart.pluginId, sessionStart.skillName);
+    if (skill === undefined) {
+      log?.warn('plugin sessionStart skill not found', {
+        pluginId: sessionStart.pluginId,
+        skillName: sessionStart.skillName,
+      });
+      continue;
+    }
+    blocks.push(
+      `<plugin_session_start plugin="${escapeXmlAttr(sessionStart.pluginId)}" ` +
+      `skill="${escapeXmlAttr(skill.name)}">\n${catalog.renderSkillPrompt(skill, '')}\n</plugin_session_start>`,
+    );
+  }
+  return blocks.length > 0 ? blocks.join('\n') : undefined;
+}
+
 export class AgentTestContext {
   private readonly serviceOverrides: readonly TestAgentScopedServiceOverride[];
   private readonly options: TestAgentOptions;
@@ -981,6 +1023,7 @@ export class AgentTestContext {
   private readonly agent: Scope;
   private readonly disposables: IDisposable[] = [];
   private suppressWireSnapshot = false;
+  private pluginSessionStartRegistered = false;
   kimiConfig: KimiConfig;
   private cwd = process.cwd();
   private closed = false;
@@ -1158,9 +1201,9 @@ export class AgentTestContext {
             // handler hands each session): the harness has no Workspace
             // scope, so it seeds equivalents directly — an empty skill
             // catalog, the workspace key the Session agent-profile catalog
-            // reads the App registry with, and a live-read AGENTS.md
-            // provider. Tests replace them through the usual service
-            // overrides.
+            // reads the App registry with, a live-read AGENTS.md
+            // provider, and a no-server MCP manager. Tests replace them
+            // through the usual service overrides.
             reg.defineInstance(ISessionSkillCatalogData, {
               _serviceBrand: undefined,
               ready: Promise.resolve(),
@@ -1172,6 +1215,11 @@ export class AgentTestContext {
               workspaceKey: workspaceId,
             } satisfies ISessionAgentProfileCatalogSeed);
             reg.defineInstance(ISessionInstructionsProvider, this.createInstructionsProvider());
+            reg.defineInstance(ISessionMcpHandle, {
+              _serviceBrand: undefined,
+              ready: Promise.resolve(),
+              connectionManager: new McpConnectionManager(),
+            } satisfies ISessionMcpHandle);
             reg.defineInstance(ISessionWorkspaceInfo, {
               _serviceBrand: undefined,
               ready: Promise.resolve(),
@@ -1394,6 +1442,29 @@ export class AgentTestContext {
 
     if (tools.length > 0) {
       profile.update({ activeToolNames: [...tools] });
+    }
+
+    const sessionStarts = this.options['pluginSessionStarts'] as
+      | readonly EnabledPluginSessionStart[]
+      | undefined;
+    const skillCatalog = this.options['skills'] as SkillCatalog | undefined;
+    if (
+      !this.pluginSessionStartRegistered &&
+      sessionStarts !== undefined &&
+      skillCatalog !== undefined
+    ) {
+      this.pluginSessionStartRegistered = true;
+      this.get(IAgentContextInjectorService).register(
+        'plugin_session_start',
+        async ({ injectedPositions }) => {
+          if (injectedPositions.length > 0) return undefined;
+          return renderPluginSessionStartReminder(
+            sessionStarts,
+            skillCatalog,
+            this.options['log'] as { warn(message: string, payload?: unknown): void } | undefined,
+          );
+        },
+      );
     }
 
     this.snapshots.drain();

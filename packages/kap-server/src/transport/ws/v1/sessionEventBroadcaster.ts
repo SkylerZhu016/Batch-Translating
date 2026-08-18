@@ -76,7 +76,6 @@ import {
 import type {
   ConfigWarningItem,
   SessionCreatedEvent,
-  SessionDeletedEvent,
   SessionMetaUpdatedEvent,
   Event,
 } from './events';
@@ -859,22 +858,6 @@ export class SessionEventBroadcaster {
       );
       return;
     }
-    if (event.type === 'event.session.deleted') {
-      const sessionId = sessionDeletedSessionId(event.payload);
-      if (sessionId === undefined) return;
-      const deleted: SessionDeletedEvent = {
-        type: 'event.session.deleted',
-        session_id: sessionId,
-      };
-      void this.dispatchDeletedSessionEvent(sessionId, {
-        ...deleted,
-        agentId: 'main',
-        sessionId,
-      } as Event).catch((error: unknown) =>
-        this.logDispatchError(sessionId, 'event.session.deleted', error),
-      );
-      return;
-    }
     if (event.type === 'session.meta.updated') {
       const payload = sessionMetaUpdatedPayload(event.payload);
       if (payload === undefined) return;
@@ -946,21 +929,6 @@ export class SessionEventBroadcaster {
     state.queue = state.queue
       .then(() => this.dispatch(state, event, isVolatileEventType(event.type)))
       .catch((error: unknown) => this.logDispatchDropped(state.sessionId, event.type, error));
-  }
-
-  private async dispatchDeletedSessionEvent(sessionId: string, event: Event): Promise<void> {
-    const state = this.sessions.get(sessionId);
-    if (state !== undefined) {
-      state.queue = state.queue
-        .then(() => this.dispatch(state, event, false))
-        .catch((error: unknown) => this.logDispatchDropped(sessionId, event.type, error));
-      return;
-    }
-
-    const global = await this.ensureGlobalState();
-    global.queue = global.queue
-      .then(() => this.dispatch(global, event, false, sessionId))
-      .catch((error: unknown) => this.logDispatchDropped(sessionId, event.type, error));
   }
 
   /**
@@ -1239,28 +1207,23 @@ export class SessionEventBroadcaster {
     );
   }
 
-  private async dispatch(
-    state: SessionState,
-    event: Event,
-    volatile: boolean,
-    envelopeSessionId: string = state.sessionId,
-  ): Promise<void> {
-    const { journal, tracker, roster, tail, targets } = state;
-    const annotation = tracker.apply(envelopeSessionId, event);
+  private async dispatch(state: SessionState, event: Event, volatile: boolean): Promise<void> {
+    const { journal, tracker, roster, tail, targets, sessionId } = state;
+    const annotation = tracker.apply(sessionId, event);
     // Same queue-discipline as the in-flight tracker: snapshot rebuilds must
     // see exactly the roster as of the durable watermark.
-    roster.apply(envelopeSessionId, event);
+    roster.apply(sessionId, event);
 
     let envelope: EventEnvelope;
     if (volatile) {
-      envelope = this.buildEnvelope(journal.seq, envelopeSessionId, event, {
+      envelope = this.buildEnvelope(journal.seq, sessionId, event, {
         epoch: journal.epoch,
         volatile: true,
         ...(annotation.offset !== undefined ? { offset: annotation.offset } : {}),
       });
     } else {
       const seq = journal.nextSeq();
-      envelope = this.buildEnvelope(seq, envelopeSessionId, event, { epoch: journal.epoch });
+      envelope = this.buildEnvelope(seq, sessionId, event, { epoch: journal.epoch });
       journal.append(seq, envelope);
       tail.push({ seq, envelope });
       while (tail.length > this.maxBufferSize) tail.shift();
@@ -1416,7 +1379,7 @@ function matchesAgentFilter(envelope: EventEnvelope, filter: AgentFilter): boole
  *   - `agent.created` / `agent.disposed` — the transcript has no lifecycle
  *     events; a roster change surfaces there only implicitly, as the new
  *     agent's baseline reset;
- *   - `tool.list.updated` — not projected;
+ *   - `tool.list.updated`, `mcp.server.status` — not projected;
  *   - every global event ({@link isGlobalEvent}) — session/workspace/config
  *     facts live outside the per-agent transcript.
  *
@@ -1457,6 +1420,7 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'compaction.cancelled',
   'compaction.completed',
   'skill.activated',
+  'plugin_command.activated',
   'cron.fired',
   'error',
   'warning',
@@ -1641,13 +1605,6 @@ function sessionCreatedPayload(
       : undefined;
   if (sessionId === undefined || session === undefined) return undefined;
   return { sessionId, session };
-}
-
-/** Recover a deleted session id from the core lifecycle fact. */
-function sessionDeletedSessionId(payload: unknown): string | undefined {
-  if (typeof payload !== 'object' || payload === null) return undefined;
-  const sessionId = (payload as { sessionId?: unknown }).sessionId;
-  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined;
 }
 
 /**

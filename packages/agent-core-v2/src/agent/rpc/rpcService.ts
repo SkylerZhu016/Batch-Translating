@@ -13,7 +13,8 @@ import {
   IAgentLifecycleService,
   MAIN_AGENT_ID,
 } from '#/session/agentLifecycle/agentLifecycle';
-
+import { expandCommandArguments } from '#/app/plugin/commands';
+import { IPluginService } from '#/app/plugin/plugin';
 import { ProfileError } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -25,6 +26,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import type {
+  ActivatePluginCommandPayload,
   ActivateSkillPayload,
   CancelPayload,
   EmptyPayload,
@@ -38,9 +40,24 @@ import { IAgentRPCService } from './rpc';
 import {
   applyPromptMetadataUpdate,
   promptMetadataTextFromPayload,
+  promptMetadataTextFromPluginCommand,
   promptMetadataTextFromSkill,
 } from './prompt-metadata';
 
+export interface PluginCommandActivatedEvent {
+  readonly type: 'plugin_command.activated';
+  readonly activationId: string;
+  readonly pluginId: string;
+  readonly commandName: string;
+  readonly commandArgs?: string;
+  readonly trigger: 'user-slash';
+}
+
+declare module '#/app/event/eventBus' {
+  interface DomainEventMap {
+    'plugin_command.activated': PluginCommandActivatedEvent;
+  }
+}
 
 export class AgentRPCService implements IAgentRPCService {
   declare readonly _serviceBrand: undefined;
@@ -60,7 +77,7 @@ export class AgentRPCService implements IAgentRPCService {
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventBus private readonly eventBus: IEventBus,
     @IEventService private readonly eventService: IEventService,
-
+    @IPluginService private readonly plugins: IPluginService,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
@@ -152,6 +169,43 @@ export class AgentRPCService implements IAgentRPCService {
     return { turn_id: turn.id };
   }
 
+  async activatePluginCommand(payload: ActivatePluginCommandPayload): Promise<void> {
+    const commands = await this.plugins.listPluginCommands();
+    const def = commands.find(
+      (command) => command.pluginId === payload.pluginId && command.name === payload.commandName,
+    );
+    if (def === undefined) {
+      throw new Error2(
+        ErrorCodes.REQUEST_INVALID,
+        `Plugin command "${payload.pluginId}:${payload.commandName}" was not found`,
+      );
+    }
+    const commandArgs = payload.args ?? '';
+    const expanded = expandCommandArguments(def.body, commandArgs);
+    const origin = {
+      kind: 'plugin_command' as const,
+      activationId: randomUUID(),
+      pluginId: payload.pluginId,
+      commandName: payload.commandName,
+      commandArgs: payload.args,
+      trigger: 'user-slash' as const,
+    };
+    this.eventBus.publish({
+      type: 'plugin_command.activated',
+      activationId: origin.activationId,
+      pluginId: origin.pluginId,
+      commandName: origin.commandName,
+      commandArgs: origin.commandArgs,
+      trigger: origin.trigger,
+    });
+    await this.promptService.enqueue({ message: {
+      role: 'user',
+      content: [{ type: 'text', text: expanded }],
+      toolCalls: [],
+      origin,
+    } });
+    await this.updatePromptMetadata(promptMetadataTextFromPluginCommand(payload));
+  }
 
   private async updatePromptMetadata(text: string | undefined): Promise<void> {
     await applyPromptMetadataUpdate(

@@ -2,7 +2,8 @@
  * Batch Translating CLI entry point.
  *
  * Parses CLI arguments via Commander.js, validates options, then delegates to
- * the requested runner: `kimi -p` runs one prompt headless, bare `kimi` prints
+ * the requested runner: `batch-translating -p` runs one prompt headless, the
+ * bare command prints
  * an orientation hint (no interactive terminal UI), and the subcommands
  * (`web`, `login`, `translation`) own their own flows.
  */
@@ -14,7 +15,6 @@ import {
   resolveGlobalLogPath,
   resolveKimiHome,
 } from '@moonshot-ai/kimi-code-sdk';
-import { installCrashHandlers } from '@moonshot-ai/kimi-telemetry';
 
 import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';
@@ -33,7 +33,7 @@ import { runNativeAssetSmokeIfRequested } from './native/smoke';
  * Outcome of a CLI command run, reported back to the process entrypoint.
  *
  * `handleMainCommand` is a reusable, unit-tested handler — it must not terminate
- * the process itself. It reports here whether a headless (`kimi -p`) run
+ * the process itself. It reports here whether a headless (`batch-translating -p`) run
  * completed so the entrypoint (the only place that owns the process) can arm the
  * force-exit fallback.
  */
@@ -62,20 +62,19 @@ export async function handleMainCommand(
     return { headlessCompleted: true };
   }
 
-  // Batch Translating ships no interactive terminal UI: a bare `kimi` run
+  // Batch Translating ships no interactive terminal UI: a bare command
   // prints a short orientation hint instead of starting a chat shell.
   process.stdout.write(
     `${PROCESS_NAME} — 批量翻译工作台（Batch Translating）\n` +
       `用法：\n` +
-      `  kimi web          启动本地工作台（桌面版会自动完成）\n` +
-      `  kimi translation  EPUB/TXT 批量翻译管线（见 kimi translation --help）\n`,
+      `  batch-translating web          启动本地工作台（桌面版会自动完成）\n` +
+      `  batch-translating translation  EPUB/TXT 批量翻译管线\n`,
   );
   return { headlessCompleted: false };
 }
 
 export function main(): void {
   process.title = PROCESS_NAME;
-  installCrashHandlers();
   // Route all outbound fetch through HTTP_PROXY/HTTPS_PROXY (honoring NO_PROXY)
   // before any client is constructed. No-op when no proxy variable is set; an
   // invalid proxy URL is reported and ignored rather than aborting startup.
@@ -109,7 +108,7 @@ export function main(): void {
         // Only the process entrypoint disposes of the process. Print mode
         // relies on the event loop draining to exit; flush any buffered output
         // and then arm an unref'd fallback so a stray ref'd handle left over
-        // from the run can't wedge a completed `kimi -p` until an external
+        // from the run can't wedge a completed `batch-translating -p` until an external
         // timeout. A healthy run drains and exits before the fallback fires.
         if (outcome.headlessCompleted) {
           await finalizeHeadlessRun(
@@ -126,7 +125,7 @@ export function main(): void {
         // await, the failed run's `finally` cleanup has already torn down its
         // ref'd handles (sockets, timers, background tasks). If the event loop
         // drains during the await, Node exits on its own with the DEFAULT code
-        // 0 and `process.exit(1)` never runs — headless (`kimi -p`) failures
+        // 0 and `process.exit(1)` never runs — headless (`batch-translating -p`) failures
         // would then exit 0 nondeterministically. Setting `process.exitCode`
         // up front makes that drain-exit report failure too.
         process.exitCode = 1;

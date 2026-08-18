@@ -93,7 +93,7 @@ function parseNextGoalCommand(tokens: readonly string[]): ParsedGoalCommand {
 }
 
 /**
- * Headless goal-mode support for the `kimi -p "/goal <objective>"` prompt path.
+ * Headless goal-mode support for the `batch-translating -p "/goal <objective>"` prompt path.
  *
  * The goal driver keeps the prompt's turn-run alive across continuation turns
  * until the goal reaches a terminal state, so the existing prompt-turn waiter

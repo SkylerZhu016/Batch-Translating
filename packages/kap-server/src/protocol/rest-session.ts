@@ -2,7 +2,6 @@
  *   POST    /v1/sessions                  body: SessionCreate   data: Session
  *   GET     /v1/sessions                  query: ListSessions   data: Page<Session>
  *   GET     /v1/sessions/{id}             -                     data: Session
- *   DELETE  /v1/sessions/{id}             -                     data: { deleted: true }
  *   GET     /v1/sessions/{id}/profile     -                     data: Session
  *   POST    /v1/sessions/{id}/profile     body: SessionUpdate   data: Session
  *   POST    /v1/sessions/{id}:fork        body: SessionFork     data: Session
@@ -188,10 +187,10 @@ export type ArchiveSessionResponse = z.infer<typeof archiveSessionResponseSchema
 export const restoreSessionResponseSchema = sessionSchema;
 export type RestoreSessionResponse = z.infer<typeof restoreSessionResponseSchema>;
 
-export const deleteSessionResponseSchema = z.object({
-  deleted: z.literal(true),
-});
-export type DeleteSessionResponse = z.infer<typeof deleteSessionResponseSchema>;
+/** @deprecated kept as an alias for backward compatibility; prefer archiveSessionResponseSchema. */
+export const deleteSessionResponseSchema = archiveSessionResponseSchema;
+/** @deprecated kept as an alias for backward compatibility; prefer ArchiveSessionResponse. */
+export type DeleteSessionResponse = ArchiveSessionResponse;
 
 export const sessionAbortResponseSchema = z.object({
   aborted: z.boolean(),

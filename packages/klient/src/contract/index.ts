@@ -11,6 +11,7 @@ import { agentActivityViewContract } from './agent/activity.js';
 import { agentRpcContract } from './agent/rpc.js';
 import {
   agentFullCompactionContract,
+  agentMcpContract,
   agentPlanContract,
   agentProfileContract,
   agentShellCommandContract,
@@ -26,6 +27,7 @@ import { envContract } from './global/env.js';
 import { flagsContract } from './global/flags.js';
 import { hostFsContract } from './global/hostFs.js';
 import { modelsContract } from './global/models.js';
+import { pluginsContract } from './global/plugins.js';
 import { providersContract } from './global/providers.js';
 import { sessionsContract } from './global/sessions.js';
 import { workspacesContract } from './global/workspaces.js';
@@ -51,6 +53,7 @@ export const globalContract: KlientContract = {
   oauthService: authContract,
   authSummaryService: authSummaryContract,
   flagService: flagsContract,
+  pluginService: pluginsContract,
   capabilityService: capabilitiesContract,
   hostFolderBrowser: hostFsContract,
   bootstrapService: envContract,
@@ -71,6 +74,7 @@ export const globalContract: KlientContract = {
   agentUsageService: agentUsageContract,
   agentPlanService: agentPlanContract,
   agentTaskService: agentTaskContract,
+  agentMcpService: agentMcpContract,
   agentFullCompactionService: agentFullCompactionContract,
 };
 

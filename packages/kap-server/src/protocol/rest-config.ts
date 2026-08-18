@@ -8,26 +8,6 @@ export const providerConfigResponseSchema = z.object({
 });
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;
 
-/**
- * Global tool activation policy mirrored from the `[tools]` TOML section.
- *
- * `enabled` is an allowlist when non-empty; `disabled` is applied as a
- * denylist on top. Tool names intentionally stay free-form because profiles
- * and plugins may contribute tools that the server does not know statically.
- */
-export const toolsConfigSchema = z.object({
-  enabled: z.array(z.string()).optional(),
-  disabled: z.array(z.string()).optional(),
-});
-export type ToolsConfig = z.infer<typeof toolsConfigSchema>;
-
-/** Custom product identity persisted in the `[identity]` TOML section. */
-export const identityConfigSchema = z.object({
-  name: z.string().optional(),
-  slug: z.string().optional(),
-});
-export type IdentityConfig = z.infer<typeof identityConfigSchema>;
-
 export const configResponseSchema = z.object({
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
@@ -40,8 +20,6 @@ export const configResponseSchema = z.object({
   default_permission_mode: z.string().optional(),
   default_plan_mode: z.boolean().optional(),
   permission: z.unknown().optional(),
-  tools: toolsConfigSchema.optional(),
-  identity: identityConfigSchema.optional(),
   hooks: z.array(z.unknown()).optional(),
   services: z.unknown().optional(),
   merge_all_available_skills: z.boolean().optional(),
@@ -66,8 +44,6 @@ export const patchConfigRequestSchema = z.object({
   default_permission_mode: z.string().optional(),
   default_plan_mode: z.boolean().optional(),
   permission: z.unknown().optional(),
-  tools: toolsConfigSchema.optional(),
-  identity: identityConfigSchema.optional(),
   hooks: z.array(z.unknown()).optional(),
   services: z.unknown().optional(),
   merge_all_available_skills: z.boolean().optional(),

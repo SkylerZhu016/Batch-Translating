@@ -38,6 +38,8 @@ import {
 } from '#/app/skillCatalog/configSection';
 import '#/agent/permissionMode/configSection';
 import { DEFAULT_PERMISSION_MODE_SECTION } from '#/agent/permissionMode/configSection';
+import '#/agent/media/configSection';
+import { IMAGE_SECTION, type ImageConfig } from '#/agent/media/configSection';
 import '#/agent/tokenCounting/configSection';
 import {
   TOKEN_COUNTING_SECTION,
@@ -91,6 +93,14 @@ import {
 } from '#/app/auth/configSection';
 import { SECONDARY_DERIVED_MODEL_ID } from '#/app/kosongConfig/secondaryModelOverlay';
 import { type SecondaryModelConfig } from '#/app/kosongConfig/configSection';
+import '#/app/mcpConfig/configSection';
+import {
+  MCP_SECTION,
+  MCP_STARTUP_TIMEOUT_ENV,
+  MCP_TOOL_TIMEOUT_ENV,
+  McpSectionSchema,
+  type McpSection,
+} from '#/app/mcpConfig/configSection';
 import { ILogService } from '#/_base/log/log';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -732,6 +742,91 @@ describe('defaultPermissionMode config section', () => {
     expect(() => registry.validate(DEFAULT_PERMISSION_MODE_SECTION, 'bogus')).toThrow();
 
     expect(registry.getSection('yolo')).toBeUndefined();
+  });
+});
+
+describe('image config section', () => {
+  it('registers the image section with an empty default and a positive-int schema', () => {
+    const registry = new ConfigRegistry();
+
+    const section = registry.getSection(IMAGE_SECTION);
+    expect(section).toBeDefined();
+    expect(section?.defaultValue).toEqual({});
+
+    expect(registry.validate(IMAGE_SECTION, {})).toEqual({});
+    expect(
+      registry.validate(IMAGE_SECTION, { maxEdgePx: 1500, readByteBudget: 131072 }),
+    ).toEqual({ maxEdgePx: 1500, readByteBudget: 131072 });
+    expect(registry.validate(IMAGE_SECTION, { maxEdgePx: 1500 })).toEqual({ maxEdgePx: 1500 });
+    expect(() => registry.validate(IMAGE_SECTION, { maxEdgePx: 0 })).toThrow();
+    expect(() => registry.validate(IMAGE_SECTION, { readByteBudget: 1.5 })).toThrow();
+  });
+
+  it('re-applies image env bindings on every get() and ignores invalid env', async () => {
+    const env: Record<string, string> = {};
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', env));
+    ix.stub(IFileSystemStorageService, new InMemoryStorageService());
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+
+    expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({});
+
+    env['KIMI_IMAGE_MAX_EDGE_PX'] = 'abc';
+    env['KIMI_IMAGE_READ_BYTE_BUDGET'] = '-1';
+    expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({});
+
+    env['KIMI_IMAGE_MAX_EDGE_PX'] = '1500';
+    env['KIMI_IMAGE_READ_BYTE_BUDGET'] = '131072';
+    expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({
+      maxEdgePx: 1500,
+      readByteBudget: 131072,
+    });
+
+    env['KIMI_IMAGE_MAX_EDGE_PX'] = '2500';
+    expect(config.get<ImageConfig>(IMAGE_SECTION).maxEdgePx).toBe(2500);
+
+    disposables.dispose();
+  });
+
+  it('restores env-owned fields to the raw value on set() while the env var is set', async () => {
+    const env: Record<string, string> = { 'KIMI_IMAGE_MAX_EDGE_PX': '1500' };
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    await storage.write(
+      '',
+      'config.toml',
+      new TextEncoder().encode('[image]\nread_byte_budget = 131072\n'),
+    );
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', env));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+
+    // A client echoing the env-overlaid section back (plus a genuine edit).
+    await config.set(IMAGE_SECTION, { maxEdgePx: 1500, readByteBudget: 262144 });
+
+    // Runtime resolution still lets the env win…
+    expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({
+      maxEdgePx: 1500,
+      readByteBudget: 262144,
+    });
+    // …but persistence drops the env-owned field and keeps the genuine edit.
+    expect(config.inspect<ImageConfig>(IMAGE_SECTION).userValue).toEqual({
+      readByteBudget: 262144,
+    });
+
+    disposables.dispose();
   });
 });
 
@@ -1840,6 +1935,120 @@ describe('secondaryModel config section', () => {
     const after = config.get<Record<string, unknown>>(MODELS_SECTION) ?? {};
     expect(after[SECONDARY_DERIVED_MODEL_ID]).toBeUndefined();
     expect(domains).toContain(MODELS_SECTION);
+
+    disposables.dispose();
+  });
+});
+
+describe('mcp config section', () => {
+  async function createConfig(env: Record<string, string>, toml?: string) {
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    if (toml !== undefined) {
+      await storage.write('', 'config.toml', new TextEncoder().encode(toml));
+    }
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', env));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+    return { config, disposables };
+  }
+
+  it('is unset by default and honours the env override', async () => {
+    const env: Record<string, string> = {};
+    const { config, disposables } = await createConfig(env);
+
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBeUndefined();
+
+    env[MCP_STARTUP_TIMEOUT_ENV] = 'abc';
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBeUndefined();
+
+    env[MCP_STARTUP_TIMEOUT_ENV] = '60000';
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBe(60000);
+
+    disposables.dispose();
+  });
+
+  it('accepts the Node.js timer upper boundary', () => {
+    expect(
+      McpSectionSchema.safeParse({
+        startupTimeoutMs: 2_147_483_647,
+        toolTimeoutMs: 2_147_483_647,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects config timeouts above the Node.js timer limit', () => {
+    expect(
+      McpSectionSchema.safeParse({
+        startupTimeoutMs: 2_147_483_648,
+        toolTimeoutMs: 2_147_483_648,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('falls back to config when env timeouts exceed the Node.js timer limit', async () => {
+    const env: Record<string, string> = {
+      [MCP_STARTUP_TIMEOUT_ENV]: '2147483648',
+      [MCP_TOOL_TIMEOUT_ENV]: '2147483648',
+    };
+    const { config, disposables } = await createConfig(
+      env,
+      '[mcp]\nstartup_timeout_ms = 5000\ntool_timeout_ms = 60000\n',
+    );
+    try {
+      expect(config.get<McpSection | undefined>(MCP_SECTION)).toEqual({
+        startupTimeoutMs: 5000,
+        toolTimeoutMs: 60000,
+      });
+    } finally {
+      disposables.dispose();
+    }
+  });
+
+  it('reads startup_timeout_ms from config.toml and lets the env var win', async () => {
+    const env: Record<string, string> = {};
+    const { config, disposables } = await createConfig(env, '[mcp]\nstartup_timeout_ms = 5000\n');
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBe(5000);
+
+    env[MCP_STARTUP_TIMEOUT_ENV] = '7000';
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBe(7000);
+
+    disposables.dispose();
+  });
+
+  it('reads tool_timeout_ms from config.toml and lets the env var win', async () => {
+    const env: Record<string, string> = {};
+    const { config, disposables } = await createConfig(env, '[mcp]\ntool_timeout_ms = 60000\n');
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.toolTimeoutMs).toBe(60000);
+
+    env[MCP_TOOL_TIMEOUT_ENV] = 'abc';
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.toolTimeoutMs).toBe(60000);
+
+    env[MCP_TOOL_TIMEOUT_ENV] = '90000';
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.toolTimeoutMs).toBe(90000);
+
+    disposables.dispose();
+  });
+
+  it('restores the env-owned timeout to the raw value on set() while the env var is set', async () => {
+    const env: Record<string, string> = { [MCP_STARTUP_TIMEOUT_ENV]: '7000' };
+    const { config, disposables } = await createConfig(env, '[mcp]\nstartup_timeout_ms = 5000\n');
+
+    // A client echoing the env-overlaid section back.
+    await config.set(MCP_SECTION, { startupTimeoutMs: 7000 });
+
+    // Runtime resolution still lets the env win…
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBe(7000);
+    // …but persistence keeps the raw value.
+    expect(config.inspect<McpSection>(MCP_SECTION).userValue).toEqual({
+      startupTimeoutMs: 5000,
+    });
 
     disposables.dispose();
   });

@@ -7,6 +7,7 @@ import {
   type AgentContextData,
   type ApprovalRequest,
   type ApprovalResponse,
+  type BeginGlobalMcpServerAuthResult,
   type CoreAPI,
   type Event,
   type ExperimentalFeatureState,
@@ -33,13 +34,20 @@ import type {
   CreateGoalInput,
   ForkSessionInput,
   GetConfigOptions,
+  McpServerConfig,
   GoalSnapshot,
   GoalToolResult,
   JsonObject,
   KimiConfig,
   KimiConfigPatch,
   ListSessionsOptions,
+  McpServerInfo,
+  McpStartupMetrics,
+  McpTestResult,
   PermissionMode,
+  PluginInfo,
+  PluginSummary,
+  ReloadSummary,
   CompactOptions,
   SessionPlan,
   SessionStatus,
@@ -50,6 +58,7 @@ import type {
   ResumedSessionSummary,
   SessionSummary,
   SkillSummary,
+  PluginCommandDef,
   Unsubscribe,
   WorkspaceTrustInfo,
 } from '#/types';
@@ -76,7 +85,9 @@ export interface ImportContextRpcInput extends SessionIdRpcInput {
   readonly source: string;
 }
 
-export interface ReloadSessionRpcInput extends SessionIdRpcInput {}
+export interface ReloadSessionRpcInput extends SessionIdRpcInput {
+  readonly forcePluginSessionStartReminder?: boolean;
+}
 
 export interface SetSessionModelRpcInput extends SessionIdRpcInput {
   readonly model: string;
@@ -110,6 +121,16 @@ export type SetSessionSwarmModeRpcInput =
 export interface ActivateSkillRpcInput extends SessionIdRpcInput {
   readonly name: string;
   readonly args?: string | undefined;
+}
+
+export interface ActivatePluginCommandRpcInput extends SessionIdRpcInput {
+  readonly pluginId: string;
+  readonly commandName: string;
+  readonly args?: string | undefined;
+}
+
+export interface ReconnectMcpServerRpcInput extends SessionIdRpcInput {
+  readonly name: string;
 }
 
 type ResolvedCoreAPI = RPCMethods<CoreAPI>;
@@ -164,7 +185,10 @@ export abstract class SDKRpcClientBase {
 
   async reloadSession(input: ReloadSessionRpcInput): Promise<ResumedSessionSummary> {
     const rpc = await this.getRpc();
-    return rpc.reloadSession({ sessionId: input.sessionId });
+    return rpc.reloadSession({
+      sessionId: input.sessionId,
+      forcePluginSessionStartReminder: input.forcePluginSessionStartReminder,
+    });
   }
 
   async forkSession(input: ForkSessionInput): Promise<SessionSummary> {
@@ -205,7 +229,7 @@ export abstract class SDKRpcClientBase {
    */
   async getWorkspaceTrustInfo(workDir: string): Promise<WorkspaceTrustInfo> {
     void workDir;
-    return { trusted: true };
+    return { trusted: true, gatedMcpServers: [] };
   }
 
   async trustWorkspace(workDir: string): Promise<void> {
@@ -278,6 +302,57 @@ export abstract class SDKRpcClientBase {
       ErrorCodes.NOT_IMPLEMENTED,
       'This SDK client does not support atomic config section replacement.',
     );
+  }
+
+  async listGlobalMcpServers(): Promise<readonly McpServerConfig[]> {
+    const rpc = await this.getRpc();
+    return rpc.listGlobalMcpServers({});
+  }
+
+  async addGlobalMcpServer(server: McpServerConfig): Promise<readonly McpServerConfig[]> {
+    const rpc = await this.getRpc();
+    return rpc.addGlobalMcpServer({ server });
+  }
+
+  async updateGlobalMcpServer(server: McpServerConfig): Promise<readonly McpServerConfig[]> {
+    const rpc = await this.getRpc();
+    return rpc.updateGlobalMcpServer({ server });
+  }
+
+  async removeGlobalMcpServer(name: string): Promise<readonly McpServerConfig[]> {
+    const rpc = await this.getRpc();
+    return rpc.removeGlobalMcpServer({ name });
+  }
+
+  async beginGlobalMcpServerAuth(name: string): Promise<BeginGlobalMcpServerAuthResult> {
+    const rpc = await this.getRpc();
+    return rpc.beginGlobalMcpServerAuth({ name });
+  }
+
+  async completeGlobalMcpServerAuth(
+    input: { readonly flowId: string; readonly timeoutMs?: number },
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.completeGlobalMcpServerAuth(input, { signal });
+  }
+
+  async cancelGlobalMcpServerAuth(flowId: string): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.cancelGlobalMcpServerAuth({ flowId });
+  }
+
+  async resetGlobalMcpServerAuth(name: string): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.resetGlobalMcpServerAuth({ name });
+  }
+
+  async testGlobalMcpServer(
+    name: string,
+    options: { readonly cwd?: string } = {},
+  ): Promise<McpTestResult> {
+    const rpc = await this.getRpc();
+    return rpc.testGlobalMcpServer({ name, cwd: options.cwd });
   }
 
   async prompt(input: SessionPromptRpcInput): Promise<void> {
@@ -574,6 +649,20 @@ export abstract class SDKRpcClientBase {
     return rpc.listSkills({ sessionId: input.sessionId });
   }
 
+  async listPluginCommands(input: SessionIdRpcInput): Promise<readonly PluginCommandDef[]> {
+    const rpc = await this.getRpc();
+    return rpc.listPluginCommands({ sessionId: input.sessionId });
+  }
+
+  /**
+   * App-global plugin command list, no session required. The v1 engine only
+   * exposes plugin commands through a live session, so the base returns an
+   * empty list; the v2 client overrides with the app-global live view.
+   */
+  async listPluginCommandsGlobal(): Promise<readonly PluginCommandDef[]> {
+    return [];
+  }
+
   async listBackgroundTasks(
     input: SessionIdRpcInput & { activeOnly?: boolean; limit?: number },
   ): Promise<readonly BackgroundTaskInfo[]> {
@@ -675,12 +764,88 @@ export abstract class SDKRpcClientBase {
     return rpc.getCronTasks({ sessionId: input.sessionId, agentId: this.interactiveAgentId });
   }
 
+  async listMcpServers(input: SessionIdRpcInput): Promise<readonly McpServerInfo[]> {
+    const rpc = await this.getRpc();
+    return rpc.listMcpServers({ sessionId: input.sessionId });
+  }
+
+  /**
+   * Workspace-level MCP server list, no session required. The v2 engine owns
+   * one shared connection set per workspace handler, so `/mcp` is inspectable
+   * before the first session exists; the v1 engine only exposes MCP through
+   * a live session and the base returns an empty list.
+   */
+  async listWorkspaceMcpServers(workDir: string): Promise<readonly McpServerInfo[]> {
+    void workDir;
+    return [];
+  }
+
+  async getMcpStartupMetrics(input: SessionIdRpcInput): Promise<McpStartupMetrics> {
+    const rpc = await this.getRpc();
+    return rpc.getMcpStartupMetrics({ sessionId: input.sessionId });
+  }
+
+  async reconnectMcpServer(input: ReconnectMcpServerRpcInput): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.reconnectMcpServer({ sessionId: input.sessionId, name: input.name });
+  }
+
+  async listPlugins(): Promise<readonly PluginSummary[]> {
+    const rpc = await this.getRpc();
+    return rpc.listPlugins({});
+  }
+
+  async installPlugin(source: string): Promise<PluginSummary> {
+    const rpc = await this.getRpc();
+    return rpc.installPlugin({ source });
+  }
+
+  async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.setPluginEnabled({ id, enabled });
+  }
+
+  async setPluginMcpServerEnabled(
+    id: string,
+    server: string,
+    enabled: boolean,
+  ): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.setPluginMcpServerEnabled({ id, server, enabled });
+  }
+
+  async removePlugin(id: string): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.removePlugin({ id });
+  }
+
+  async reloadPlugins(): Promise<ReloadSummary> {
+    const rpc = await this.getRpc();
+    return rpc.reloadPlugins({});
+  }
+
+  async getPluginInfo(id: string): Promise<PluginInfo> {
+    const rpc = await this.getRpc();
+    return rpc.getPluginInfo({ id });
+  }
+
   async activateSkill(input: ActivateSkillRpcInput): Promise<void> {
     const rpc = await this.getRpc();
     return rpc.activateSkill({
       sessionId: input.sessionId,
       agentId: this.interactiveAgentId,
       name: input.name,
+      args: input.args,
+    });
+  }
+
+  async activatePluginCommand(input: ActivatePluginCommandRpcInput): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.activatePluginCommand({
+      sessionId: input.sessionId,
+      agentId: this.interactiveAgentId,
+      pluginId: input.pluginId,
+      commandName: input.commandName,
       args: input.args,
     });
   }

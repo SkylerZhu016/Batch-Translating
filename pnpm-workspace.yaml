@@ -1,9 +1,9 @@
 packages:
   - packages/*
   - apps/*
-  # The Tauri desktop shell is a pure Rust package (no pnpm deps); it must not
-  # join the JS workspace, otherwise pnpm tries to install it.
-  - "!apps/batch-translating-desktop"
+  - apps/vis/server
+  - apps/vis/web
+  - docs
 
 catalog:
   zod: 4.3.6

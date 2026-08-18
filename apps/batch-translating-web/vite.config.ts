@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
+const appRoot = fileURLToPath(new URL('.', import.meta.url));
 const webPort = Number(process.env.WEB_PORT) || 5175;
 // Dev-proxy backend presets: `default` is the kap-server started by the root
 // `pnpm dev:server` (port 58627); `multi` is a second kap-server instance
@@ -124,6 +125,9 @@ export default defineConfig({
     backendSwitcherPlugin(),
     Icons({
       compiler: 'vue3',
+      // Resolve icon collections from this package even when Vitest/Vite is
+      // launched from the monorepo root.
+      collectionsNodeResolvePath: appRoot,
       // Local Kimi Design System icons (24×24 outlined, fill="currentColor"),
       // copied from the design-system icon pack into src/icons/kimi/ and
       // imported as `~icons/kimi/<file-name>` (plus `?raw`), same as the ri

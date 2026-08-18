@@ -1,8 +1,8 @@
 {
-  "name": "@moonshot-ai/batch-translating-desktop",
+  "name": "@batch-translating/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Tauri desktop shell for Batch Translating: a native window that starts the local kimi.exe engine and opens the workbench web UI.",
+  "description": "Tauri desktop shell for Batch Translating: a native window that starts the local Batch Translating engine and opens the workbench web UI.",
   "license": "MIT",
   "scripts": {
     "tauri": "tauri",
@@ -10,5 +10,7 @@
     "tauri:build": "tauri build",
     "icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-icons.ps1"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
 }

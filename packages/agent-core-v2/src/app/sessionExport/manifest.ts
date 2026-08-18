@@ -18,6 +18,8 @@ export interface ExportSessionManifestSummary {
   readonly id: string;
   readonly title?: string | undefined;
   readonly workspaceDir?: string | undefined;
+  readonly createdAt?: number | undefined;
+  readonly updatedAt?: number | undefined;
 }
 
 export function buildExportManifest(args: {
@@ -32,8 +34,10 @@ export function buildExportManifest(args: {
   readonly desktopVersion?: string;
   readonly installSource?: string | undefined;
   readonly shellEnv?: ShellEnvironment | undefined;
+  readonly redacted?: boolean;
+  readonly diagnostics?: import('./sessionExport').ExportDiagnosticContext;
 }): ExportSessionManifest {
-  return {
+  const manifest: ExportSessionManifest = {
     sessionId: args.summary.id,
     exportedAt: args.now.toISOString(),
     kimiCodeVersion: args.version,
@@ -57,4 +61,30 @@ export function buildExportManifest(args: {
     installSource: args.installSource,
     shellEnv: args.shellEnv,
   };
+  if (args.redacted === true) {
+    return {
+      ...manifest,
+      exportKind: 'redacted-diagnostics',
+      privacy: {
+        rawSessionIncluded: false,
+        sourceTextIncluded: false,
+        credentialsIncluded: false,
+      },
+      diagnostics: args.diagnostics,
+      sessionFirstActivity:
+        args.summary.createdAt === undefined
+          ? undefined
+          : new Date(args.summary.createdAt).toISOString(),
+      sessionLastActivity:
+        args.summary.updatedAt === undefined
+          ? undefined
+          : new Date(args.summary.updatedAt).toISOString(),
+      title: undefined,
+      workspaceDir: undefined,
+      sessionLogPath: undefined,
+      globalLogPath: undefined,
+      desktopLogPath: undefined,
+    };
+  }
+  return manifest;
 }

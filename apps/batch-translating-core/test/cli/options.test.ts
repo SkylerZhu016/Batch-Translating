@@ -27,7 +27,7 @@ function parse(argv: string[]): CLIOptions {
     writeErr: () => {},
   });
 
-  program.parse(['node', 'kimi', ...argv]);
+  program.parse(['node', 'batch-translating', ...argv]);
 
   if (captured === undefined) {
     throw new Error('Main action handler was not called');
@@ -67,7 +67,7 @@ describe('CLI options parsing', () => {
         },
       });
 
-      expect(() => program.parse(['node', 'kimi', '--version'])).toThrow();
+      expect(() => program.parse(['node', 'batch-translating', '--version'])).toThrow();
       expect(output).toContain('1.2.3');
     });
 
@@ -84,7 +84,7 @@ describe('CLI options parsing', () => {
         },
       });
 
-      expect(() => program.parse(['node', 'kimi', '-V'])).toThrow();
+      expect(() => program.parse(['node', 'batch-translating', '-V'])).toThrow();
       expect(output).toContain('4.5.6');
     });
   });

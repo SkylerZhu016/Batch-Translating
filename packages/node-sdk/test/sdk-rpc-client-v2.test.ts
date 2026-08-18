@@ -139,6 +139,19 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring MVP)', () => {
     }
   });
 
+  it('serves the plugin catalog from the v2 engine on an empty home', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    tempDirs.push(homeDir);
+    const rpc = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    try {
+      expect(await rpc.listPlugins()).toEqual([]);
+      expect(await rpc.reloadPlugins()).toEqual({ added: [], removed: [], errors: [] });
+      await expect(rpc.getPluginInfo('missing-plugin')).rejects.toThrow();
+    } finally {
+      await rpc.close();
+    }
+  });
+
   it('persists removeProvider as one atomic cascade (providers, models, defaults)', async () => {
     const { harness } = await makeHarness();
     try {
@@ -210,6 +223,43 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring MVP)', () => {
 });
 
 describe('SDKRpcClientV2 workspace trust', () => {
+  it('reports an untrusted workspace with the project MCP servers it gates', async () => {
+    const { harness } = await makeHarness();
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
+    tempDirs.push(workDir);
+    await writeFile(
+      join(workDir, '.mcp.json'),
+      JSON.stringify({ mcpServers: { 'root-server': { command: 'root-cmd' } } }),
+      'utf-8',
+    );
+    await mkdir(join(workDir, '.kimi-code'), { recursive: true });
+    await writeFile(
+      join(workDir, '.kimi-code', 'mcp.json'),
+      JSON.stringify({ mcpServers: { 'nested-server': { command: 'nested-cmd' } } }),
+      'utf-8',
+    );
+    try {
+      const info = await harness.getWorkspaceTrustInfo(workDir);
+      expect(info.trusted).toBe(false);
+      expect(info.gatedMcpServers).toEqual(['nested-server', 'root-server']);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('degrades the gated-server list to empty on an invalid project mcp.json', async () => {
+    const { harness } = await makeHarness();
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
+    tempDirs.push(workDir);
+    await writeFile(join(workDir, '.mcp.json'), '{not json', 'utf-8');
+    try {
+      const info = await harness.getWorkspaceTrustInfo(workDir);
+      expect(info).toEqual({ trusted: false, gatedMcpServers: [] });
+    } finally {
+      await harness.close();
+    }
+  });
+
   it('trustWorkspace flips the state and persists the marker in the kimi home', async () => {
     const { harness, homeDir } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
@@ -218,6 +268,7 @@ describe('SDKRpcClientV2 workspace trust', () => {
       await harness.trustWorkspace(workDir);
       expect(await harness.getWorkspaceTrustInfo(workDir)).toEqual({
         trusted: true,
+        gatedMcpServers: [],
       });
       // The trust marker lives in the kimi home, never in the checkout.
       const markers = await readdir(join(homeDir, 'workspace-trust'));

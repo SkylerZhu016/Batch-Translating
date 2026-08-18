@@ -42,7 +42,7 @@ import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
-
+import { IAgentVideoResolverService } from '#/agent/media/videoResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
@@ -170,7 +170,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @IAgentTokenCountingService private readonly tokenCounting: IAgentTokenCountingService,
     @IAgentToolRegistryService private readonly tools: IAgentToolRegistryService,
     @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
-
+    @IAgentVideoResolverService private readonly videoResolver: IAgentVideoResolverService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentUsageService private readonly usage: IAgentUsageService,
     @IConfigService private readonly config: IConfigService,
@@ -355,7 +355,11 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       const projected = requestInput(projection);
       const input = {
         ...projected,
-        messages: projected.messages,
+        messages: await this.videoResolver.resolve(
+          projected.messages,
+          request.requester,
+          signal,
+        ),
       };
       const fields =
         projection === 'normal'

@@ -71,6 +71,7 @@ import { IWorkspaceAgentProfileLoader } from '#/workspace/workspaceAgentProfileL
 import { IExtraAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoader';
 import { IExplicitAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoader';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
+import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
 import { IWorkspaceDirs } from '#/workspace/workspaceDirs/workspaceDirs';
 import {
   WorkspaceDirsService,
@@ -82,6 +83,7 @@ import { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLif
 import { IWorkspaceToolPolicy } from '#/workspace/workspaceToolPolicy/workspaceToolPolicy';
 import { WorkspaceToolPolicyService } from '#/workspace/workspaceToolPolicy/workspaceToolPolicyService';
 import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructions';
+import { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp';
 import { IWorkspaceSkillCatalog } from '#/workspace/workspaceSkillCatalog/workspaceSkillCatalog';
 
 import { stubLog } from '../../_base/log/stubs';
@@ -169,6 +171,20 @@ function workspaceInstructionsStub(): IWorkspaceInstructionsService {
     reload: () => Promise.resolve(),
     sessionProvider: () => provider,
   } as unknown as IWorkspaceInstructionsService;
+}
+
+function workspaceMcpStub(): IWorkspaceMcpService {
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    sessionHandle: () => ({
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get connectionManager(): never {
+        throw new Error('not implemented');
+      },
+    }),
+  } as unknown as IWorkspaceMcpService;
 }
 
 describe('workspace add-dir (handler chain)', () => {
@@ -358,7 +374,9 @@ describe('workspace add-dir (handler chain)', () => {
       stubPair(IExtraAgentProfileLoader, agentProfileLoaderStub()),
       stubPair(IExplicitAgentProfileLoader, agentProfileLoaderStub()),
       stubPair(IUserAgentProfileLoader, userAgentProfileLoaderStub()),
+      stubPair(IPluginAgentProfileLoader, agentProfileLoaderStub()),
       stubPair(IWorkspaceInstructionsService, workspaceInstructionsStub()),
+      stubPair(IWorkspaceMcpService, workspaceMcpStub()),
     ]);
     hosts.push(host);
     return host;

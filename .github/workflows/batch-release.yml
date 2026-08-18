@@ -1,0 +1,73 @@
+name: batch-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Passing batch-windows-build run ID
+        required: true
+        type: string
+      tag:
+        description: Release tag, for example desktop-v0.2.0
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: printf '%s' "$RELEASE_TAG" | grep -Eq '^desktop-v[0-9]+\.[0-9]+\.[0-9]+$'
+      - name: Validate source build
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          metadata="$(gh run view "$RUN_ID" --repo "${{ github.repository }}" --json conclusion,headBranch,headSha,workflowName)"
+          test "$(jq -r .workflowName <<<"$metadata")" = "batch-windows-build"
+          test "$(jq -r .conclusion <<<"$metadata")" = "success"
+          test "$(jq -r .headBranch <<<"$metadata")" = "main"
+          echo "head_sha=$(jq -r .headSha <<<"$metadata")" >> "$GITHUB_OUTPUT"
+      - name: Validate full CI for the same commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.source.outputs.head_sha }}
+        shell: bash
+        run: |
+          runs="$(gh run list --repo "${{ github.repository }}" --workflow batch-ci.yml --commit "$HEAD_SHA" --limit 20 --json conclusion,headSha)"
+          passing="$(jq --arg sha "$HEAD_SHA" '[.[] | select(.headSha == $sha and .conclusion == "success")] | length' <<<"$runs")"
+          test "$passing" -gt 0
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.head_sha }}
+          persist-credentials: false
+      - name: Download validated Windows artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.build_run_id }}
+        run: gh run download "$RUN_ID" --repo "${{ github.repository }}" --dir dist-release
+      - name: Rescan artifact
+        run: node scripts/ci/scan-artifacts.mjs dist-release
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          mapfile -d '' files < <(find dist-release -type f -print0)
+          test "${#files[@]}" -gt 0
+          gh release create "$RELEASE_TAG" "${files[@]}" \
+            --repo "${{ github.repository }}" \
+            --target "${{ steps.source.outputs.head_sha }}" \
+            --title "$RELEASE_TAG" \
+            --generate-notes

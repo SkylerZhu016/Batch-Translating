@@ -267,6 +267,8 @@ export class AgentTranscriptProjector {
         return [this.markerOp('hook', restOf(event))];
       case 'skill.activated':
         return [this.markerOp('skill', restOf(event))];
+      case 'plugin_command.activated':
+        return [this.markerOp('skill', { ...restOf(event), variant: 'plugin_command' })];
       case 'cron.fired':
         return [this.markerOp('cron.fired', restOf(event))];
       case 'compaction.started':

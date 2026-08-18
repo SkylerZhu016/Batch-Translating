@@ -23,7 +23,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 65 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 70 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -89,10 +89,15 @@
 //     loop.disposing                                  src/agent/loop/loopService.ts
 //     loop.lastRequestTraceId                         src/agent/loop/loopService.ts
 //     loop.nextReservedTurnId                         src/agent/loop/loopService.ts
+//     mcp.discoveryWritesReady                        src/agent/mcp/mcpService.ts
+//     mcp.mcpToolsByServer                            src/agent/mcp/mcpService.ts
+//     media.registeredKey                             src/agent/media/mediaToolsRegistrar.ts
+//     media.resolved                                  src/agent/media/videoResolverService.ts
 //     permissionMode.lastMode                         src/agent/permissionMode/injection/permissionModeInjection.ts
 //     plan.wasActive                                  src/agent/plan/injection/planModeInjection.ts
 //     profile.activeToolNamesOverlay                  src/agent/profile/profileService.ts
 //     profile.agentsMdWarning                         src/agent/profile/profileService.ts
+//     profile.emittedPluginBudgetWarnings             src/agent/profile/profileService.ts
 //     profile.emittedThinkingEffortWarnings           src/agent/profile/profileService.ts
 //     profile.emittedToolPatternWarnings              src/agent/profile/profileService.ts
 //     prompt.launching                                src/agent/prompt/promptService.ts
@@ -1085,6 +1090,38 @@ export interface AgentStateSnapshot {
   'loop.disposing': boolean;
   'loop.lastRequestTraceId': string | undefined;
   'loop.nextReservedTurnId': number | undefined;
+  // src/agent/mcp/mcpService.ts
+  'mcp.discoveryWritesReady': boolean;
+  'mcp.mcpToolsByServer': Map<string, string[]>;
+  // src/agent/media/mediaToolsRegistrar.ts
+  'media.registeredKey': string | undefined;
+  // src/agent/media/videoResolverService.ts
+  'media.resolved': Map<string, /* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+    type: 'text';
+    text: string;
+  } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+    type: 'think';
+    think: string;
+    encrypted?: string;
+  } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+    type: 'image_url';
+    imageUrl: {
+      url: string;
+      id?: string;
+    };
+  } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+    type: 'audio_url';
+    audioUrl: {
+      url: string;
+      id?: string;
+    };
+  } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+    type: 'video_url';
+    videoUrl: {
+      url: string;
+      id?: string;
+    };
+  }>;
   // src/agent/permissionMode/injection/permissionModeInjection.ts
   'permissionMode.lastMode': 'manual' | 'yolo' | 'auto' | undefined;
   // src/agent/plan/injection/planModeInjection.ts
@@ -1092,6 +1129,7 @@ export interface AgentStateSnapshot {
   // src/agent/profile/profileService.ts
   'profile.activeToolNamesOverlay': readonly string[] | undefined;
   'profile.agentsMdWarning': string | undefined;
+  'profile.emittedPluginBudgetWarnings': Set<string>;
   'profile.emittedThinkingEffortWarnings': Set<string>;
   'profile.emittedToolPatternWarnings': Set<string>;
   // src/agent/prompt/promptService.ts
@@ -1117,7 +1155,10 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
-  } | (/* AgentTaskInfoBase — packages/agent-core-v2/src/agent/task/types.ts */ {
+  } | /* SubagentTaskInfo — packages/agent-core-v2/src/agent/tools/agent/subagent-task.ts */ {
+    readonly kind: 'agent';
+    readonly agentId?: string;
+    readonly subagentType?: string;
     readonly taskId: string;
     readonly description: string;
     readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
@@ -1127,15 +1168,11 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
-  } & {
+  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/tools/os/bash/process-task.ts */ {
     readonly kind: 'process';
     readonly command: string;
     readonly pid: number;
     readonly exitCode: number | null;
-  }) | /* SubagentTaskInfo — packages/agent-core-v2/src/agent/tools/agent/subagent-task.ts */ {
-    readonly kind: 'agent';
-    readonly agentId?: string;
-    readonly subagentType?: string;
     readonly taskId: string;
     readonly description: string;
     readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';

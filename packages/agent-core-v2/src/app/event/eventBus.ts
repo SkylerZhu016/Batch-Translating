@@ -19,16 +19,9 @@
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { type IDisposable } from '#/_base/di/lifecycle';
-import type { KimiErrorPayload } from '#/errors';
 
-/** Engine-wide error notification published by loop / compaction on failure. */
-export interface ErrorEvent extends KimiErrorPayload {
-  readonly type: 'error';
-}
-
-export interface DomainEventMap {
-  error: ErrorEvent;
-}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface DomainEventMap {}
 
 export type DomainEvent<K extends keyof DomainEventMap = keyof DomainEventMap> = {
   [T in K]: Readonly<{ readonly type: T } & DomainEventMap[T]>;

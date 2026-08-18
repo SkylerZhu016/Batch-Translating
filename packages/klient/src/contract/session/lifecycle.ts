@@ -13,17 +13,28 @@
 import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';
+import { mcpServerConfigSchema } from '../mcp.js';
 import type { ServiceContract } from '../types.js';
 
 export const createSessionOptionsSchema = z.object({
   sessionId: z.string().optional(),
   workDir: z.string(),
   additionalDirs: z.array(z.string()).optional(),
+  /**
+   * Ephemeral per-session MCP servers (engine `CreateSessionOptions.mcpServers`):
+   * connected only for the created session, never persisted.
+   */
+  mcpServers: z.record(z.string(), mcpServerConfigSchema).optional(),
 });
 
 /** Same fields as `ResumeSessionOptions` in the engine — keep in sync. */
 export const resumeSessionOptionsSchema = z.object({
   additionalDirs: z.array(z.string()).optional(),
+  /**
+   * Ephemeral per-session MCP servers, applied when resume re-materializes a
+   * cold session (ignored when the session is already live).
+   */
+  mcpServers: z.record(z.string(), mcpServerConfigSchema).optional(),
 });
 
 export const forkSessionOptionsSchema = z.object({

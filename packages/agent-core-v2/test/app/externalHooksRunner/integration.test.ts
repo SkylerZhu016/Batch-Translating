@@ -43,6 +43,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
+import { IPluginService } from '#/app/plugin/plugin';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import {
@@ -307,6 +308,7 @@ describe('IExternalHooksRunnerService integration', () => {
           reg.defineInstance(ISessionContext, stubSessionContext());
           reg.defineInstance(ISessionMetadata, stubSessionMetadata());
           reg.definePartialInstance(IConfigService, {});
+          reg.definePartialInstance(IPluginService, {});
           reg.defineInstance(IAgentContextMemoryService, context);
           reg.defineInstance(IAgentLoopService, loop);
           reg.define(IEventBus, EventBusService);
@@ -411,6 +413,7 @@ describe('IExternalHooksRunnerService integration', () => {
           reg.defineInstance(ISessionContext, stubSessionContext());
           reg.defineInstance(ISessionMetadata, stubSessionMetadata());
           reg.definePartialInstance(IConfigService, {});
+          reg.definePartialInstance(IPluginService, {});
           reg.defineInstance(IAgentContextMemoryService, stubContextMemory());
           reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
           reg.define(IEventBus, EventBusService);
@@ -614,6 +617,10 @@ describe('IExternalHooksRunnerService integration', () => {
                   },
                 ]
                 : undefined) as T,
+          });
+          reg.definePartialInstance(IPluginService, {
+            enabledHooks: async () => [],
+            onDidReload: Event.None as IPluginService['onDidReload'],
           });
           reg.defineInstance(IAgentContextMemoryService, context);
           reg.defineInstance(IAgentLoopService, loop);
@@ -886,6 +893,10 @@ describe('IExternalHooksRunnerService integration', () => {
                 ]
                 : undefined) as T,
           });
+          reg.definePartialInstance(IPluginService, {
+            enabledHooks: async () => [],
+            onDidReload: Event.None as IPluginService['onDidReload'],
+          });
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.define(IHostProcessService, HostProcessService);
         },
@@ -1076,6 +1087,10 @@ describe('IExternalHooksRunnerService integration', () => {
                 ? [{ event: 'SessionStart' as const, command, timeout: 5 }]
                 : undefined) as T,
           });
+          reg.definePartialInstance(IPluginService, {
+            enabledHooks: async () => [],
+            onDidReload: Event.None as IPluginService['onDidReload'],
+          });
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.define(IHostProcessService, HostProcessService);
         },
@@ -1136,6 +1151,7 @@ describe('IExternalHooksRunnerService integration', () => {
           reg.defineInstance(ISessionContext, stubSessionContext());
           reg.defineInstance(ISessionMetadata, stubSessionMetadata('My Session'));
           reg.definePartialInstance(IConfigService, {});
+          reg.definePartialInstance(IPluginService, {});
           reg.defineInstance(IAgentContextMemoryService, stubContextMemory());
           reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
           reg.define(IEventBus, EventBusService);
@@ -1353,7 +1369,7 @@ describe('IExternalHooksRunnerService integration', () => {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(fired).toEqual([]);
 
-      // A reload contributes a SessionHeartbeat hook: the timer arms.
+      // A plugin reload contributes a SessionHeartbeat hook: the timer arms.
       heartbeatEnabled = true;
       reloadEmitter.fire();
       await vi.advanceTimersByTimeAsync(60_000);

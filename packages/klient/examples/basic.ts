@@ -53,6 +53,14 @@ async function main(): Promise<void> {
     await klient.global.kosong.removeProvider('__klient_example__');
     sub.dispose();
 
+    // 4) Error path — a missing plugin surfaces an error.
+    try {
+      await klient.global.plugins.info('__definitely_missing__');
+    } catch (error) {
+      const e = error as { name: string; code?: number };
+      console.log('[error]    plugins.info        ->', e.name, e.code);
+    }
+
     await klient.close();
   } finally {
     app.dispose();

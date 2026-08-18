@@ -14,12 +14,13 @@ import { homedir } from 'node:os';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/errors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-
+import { IPluginService } from '#/app/plugin/plugin';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 
 import { ICapabilityService } from './capability';
 import { CapabilityErrors } from './errors';
-
+import { createKimiCuEntry } from './entries/kimiCu';
+import { createKimiWebbridgeEntry } from './entries/kimiWebbridge';
 import type {
   CapabilityEntry,
   CapabilityId,
@@ -39,7 +40,7 @@ export class CapabilityService implements ICapabilityService {
 
   constructor(
     @IBootstrapService bootstrap: IBootstrapService,
-
+    @IPluginService plugins: IPluginService,
     @IHostProcessService hostProcess: IHostProcessService,
     entriesOverride?: readonly CapabilityEntry[],
   ) {
@@ -51,9 +52,13 @@ export class CapabilityService implements ICapabilityService {
         arch: process.arch,
         kimiHomeDir: bootstrap.homeDir,
         userHomeDir: homedir(),
+        plugins,
         hostProcess,
       };
-      this.entries = new Map<CapabilityId, CapabilityEntry>([]);
+      this.entries = new Map<CapabilityId, CapabilityEntry>([
+        ['kimi-cu', createKimiCuEntry(ctx)],
+        ['kimi-webbridge', createKimiWebbridgeEntry(ctx)],
+      ]);
     }
   }
 

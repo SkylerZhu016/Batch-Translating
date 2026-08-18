@@ -2,7 +2,13 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    projects: ['packages/*', 'apps/batch-translating-core'],
+    projects: [
+      'packages/*',
+      'apps/kimi-code',
+      'apps/vscode',
+      'apps/batch-translating-core',
+      'apps/batch-translating-web',
+    ],
     coverage: {
       provider: 'v8',
       include: ['packages/*/src/**/*.ts', 'apps/*/src/**/*.ts'],

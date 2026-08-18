@@ -206,14 +206,6 @@ function toggleDefaultThinking(): void {
   emit('updateConfig', { thinking: { enabled: !thinkingEnabled() } } as Partial<AppConfig>);
 }
 
-// Telemetry is opt-out: undefined and `true` both mean enabled, only explicit
-// `false` disables it. Toggle based on that effective state so an unset value
-// (displayed as on) flips to `false` instead of writing a redundant `true`.
-function toggleTelemetry(): void {
-  const enabled = props.config?.telemetry !== false;
-  emit('updateConfig', { telemetry: !enabled } as Partial<AppConfig>);
-}
-
 function setTab(tab: SettingsTab): void {
   activeTab.value = tab;
 }
@@ -579,10 +571,9 @@ function archiveTime(iso: string): string {
                 <span class="hint">{{ t('settings.telemetryRestartHint') }}</span>
               </span>
               <Switch
-                :model-value="config.telemetry !== false"
-                :disabled="configSaving"
+                :model-value="false"
+                disabled
                 :label="t('settings.telemetry')"
-                @update:model-value="toggleTelemetry()"
               />
             </div>
             <div class="row">

@@ -275,6 +275,12 @@ async function runServerInProcess(
   const v2 = await startServer({
     host: options.host,
     port: options.port,
+    // Keep every KAP-owned artifact (config, sessions, instance registry and
+    // bearer token) under Batch Translating's product data directory. Without
+    // this explicit boundary kap-server falls back to the upstream
+    // `~/.kimi-code` home, while the CLI reads the token from
+    // `~/.batch-translating`, leaving the browser unable to authenticate.
+    homeDir: getDataDir(),
     // Report the CLI's product version as `server_version` (/meta, web UI)
     // rather than kap-server's private package version.
     serverVersion: version,
@@ -295,10 +301,8 @@ async function runServerInProcess(
     allowRemoteTerminals: options.allowRemoteTerminals,
     allowedHosts: options.allowedHosts,
     disableAuth: options.dangerousBypassAuth,
-    // Attach the engine's cloud telemetry appender (still gated by the config
-    // `telemetry` toggle). Complements the v1 client registered above, which
-    // only covers host-level events.
-    telemetry: true,
+    // Never attach the upstream cloud telemetry appender for this fork.
+    telemetry: false,
     webAssetsDir,
   });
   logger.info('serving the REST/WS API and the bundled web UI');

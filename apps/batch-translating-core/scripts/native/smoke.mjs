@@ -68,13 +68,13 @@ const versionOutput = await runKimi(['--version']);
 assertIncludes(versionOutput, expectedVersion, '--version');
 
 const helpOutput = await runKimi(['--help']);
-assertIncludes(helpOutput, 'Usage: kimi', '--help');
+assertIncludes(helpOutput, 'Usage: batch-translating', '--help');
 
 const webHelpOutput = await runKimi(['web', '--help']);
-assertIncludes(webHelpOutput, 'Usage: kimi web', 'web --help');
+assertIncludes(webHelpOutput, 'Usage: batch-translating web', 'web --help');
 
 const translationHelpOutput = await runKimi(['translation', '--help']);
-assertIncludes(translationHelpOutput, 'Usage: kimi translation', 'translation --help');
+assertIncludes(translationHelpOutput, 'Usage: batch-translating translation', 'translation --help');
 
 const smokeCache = resolve(smokeHome, 'cache');
 await rm(smokeHome, { recursive: true, force: true });

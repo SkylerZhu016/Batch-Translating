@@ -21,7 +21,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import type { ISessionScopeHandle } from '#/_base/di/scope';
 import type { Event } from '#/_base/event';
 import type { BindAgentInput } from '#/agent/profile/profile';
-
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 import type {
   SessionCloseReason,
   SessionCreateSource,
@@ -34,6 +34,13 @@ export interface CreateSessionOptions {
   readonly workDir: string;
   readonly additionalDirs?: readonly string[];
   readonly mainAgentBinding?: BindAgentInput;
+  /**
+   * Ephemeral per-session MCP servers: connected only for this session,
+   * visible only to this session (an entry shadows a workspace server of the
+   * same name), never persisted to any MCP config file, and released when
+   * the session closes. Not carried over by fork or resume.
+   */
+  readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
 }
 
 export interface ForkSessionOptions {
@@ -45,6 +52,13 @@ export interface ForkSessionOptions {
 
 export interface ResumeSessionOptions {
   readonly additionalDirs?: readonly string[];
+  /**
+   * Ephemeral per-session MCP servers — the same semantics as
+   * `CreateSessionOptions.mcpServers`: a session-owned overlay connected for
+   * this session only, never persisted, released when the session closes.
+   * Ignored when the session is already live (resume passes through).
+   */
+  readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
 }
 
 export interface CreateChildSessionOptions {

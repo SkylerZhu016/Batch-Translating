@@ -32,6 +32,7 @@ export type {
   GlobalFlagsFacade,
   GlobalHostFsFacade,
   GlobalKosongFacade,
+  GlobalPluginsFacade,
   GlobalSessionsFacade,
   GlobalWorkspacesFacade,
   KlientEnvInfo,
@@ -68,6 +69,7 @@ export type {
   AgentContextData,
   AgentFacade,
   AgentTaskInfo,
+  McpServerEntry,
   PlanData,
   PromptLaunchResult,
   SetModelResult,
@@ -108,6 +110,13 @@ export type {
   FsBrowseResponse,
   FsHomeResponse,
 } from '@moonshot-ai/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
+export type {
+  PluginCommandDef,
+  PluginInfo,
+  PluginSummary,
+  PluginUpdateStatus,
+  ReloadSummary,
+} from '@moonshot-ai/agent-core-v2/app/plugin/types';
 export type {
   AgentMeta,
   SessionMeta,
