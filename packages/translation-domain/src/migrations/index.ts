@@ -46,8 +46,7 @@ CREATE TABLE source_items (
   schema_version INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(project_id, href),
-  UNIQUE(project_id, immutable_path)
+  UNIQUE(project_id, href)
 ) STRICT;
 
 CREATE TABLE paragraphs (
