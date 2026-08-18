@@ -74,6 +74,15 @@ importers:
 
   apps/batch-translating-core:
     devDependencies:
+      '@batch-translating/translation-domain':
+        specifier: workspace:^
+        version: link:../../packages/translation-domain
+      '@batch-translating/translation-rag':
+        specifier: workspace:^
+        version: link:../../packages/translation-rag
+      '@batch-translating/translation-tools':
+        specifier: workspace:^
+        version: link:../../packages/translation-tools
       '@batch-translating/web':
         specifier: workspace:^
         version: link:../batch-translating-web
@@ -922,6 +931,15 @@ importers:
 
   packages/kap-server:
     dependencies:
+      '@batch-translating/translation-domain':
+        specifier: workspace:^
+        version: link:../translation-domain
+      '@batch-translating/translation-rag':
+        specifier: workspace:^
+        version: link:../translation-rag
+      '@batch-translating/translation-tools':
+        specifier: workspace:^
+        version: link:../translation-tools
       '@fastify/multipart':
         specifier: ^10.0.0
         version: 10.0.0
@@ -1122,6 +1140,19 @@ importers:
       zod:
         specifier: 'catalog:'
         version: 4.3.6
+
+  packages/translation-domain: {}
+
+  packages/translation-rag: {}
+
+  packages/translation-tools:
+    dependencies:
+      jszip:
+        specifier: 3.10.1
+        version: 3.10.1
+      linkedom:
+        specifier: 0.18.12
+        version: 0.18.12
 
   packages/tree-sitter-bash:
     devDependencies:
