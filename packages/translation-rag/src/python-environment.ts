@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, mkdir } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { probeRagPython, resolveRagServiceDirectory } from './service.ts';
@@ -103,13 +103,29 @@ export async function prepareRagPythonEnvironment(
     const versionResult = await runCommand(bootstrapPython, ['--version'], options.signal);
     const bootstrapVersion = parsePythonVersion(`${versionResult.stdout}\n${versionResult.stderr}`);
     assertSupportedPython(bootstrapVersion);
+    const bootstrapTorchVersion = await probeTorchVersion(bootstrapPython, options.signal);
 
     if (!(await pathExists(pythonExecutable))) {
       emit('creating_venv', 'Creating an isolated Python environment');
       await mkdir(home, { recursive: true });
+      // Torch is several gigabytes. Let the product venv reuse a compatible
+      // host installation instead of silently installing a second copy.
       await runCommand(
         bootstrapPython,
-        ['-m', 'venv', environmentDirectory],
+        [
+          '-m',
+          'venv',
+          ...(bootstrapTorchVersion ? ['--system-site-packages'] : []),
+          environmentDirectory,
+        ],
+        options.signal,
+        (line) => emit('creating_venv', line),
+      );
+    } else if (bootstrapTorchVersion && !(await probeTorchVersion(pythonExecutable, options.signal))) {
+      emit('creating_venv', 'Reusing the existing system Torch installation');
+      await runCommand(
+        bootstrapPython,
+        ['-m', 'venv', '--upgrade', '--system-site-packages', environmentDirectory],
         options.signal,
         (line) => emit('creating_venv', line),
       );
@@ -128,6 +144,14 @@ export async function prepareRagPythonEnvironment(
       throw new RangeError('maxAttempts must be an integer from 1 to 5');
     }
     let installError: unknown;
+    const torchConstraint = bootstrapTorchVersion
+      ? join(environmentDirectory, 'batch-translating-constraints.txt')
+      : undefined;
+    if (torchConstraint) {
+      // The resolver may use the visible host Torch, but it may not replace it
+      // with a different copy inside the product environment.
+      await writeFile(torchConstraint, `torch==${bootstrapTorchVersion}\n`, 'utf8');
+    }
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       options.signal?.throwIfAborted();
       emit('installing', `Installing the packaged RAG service (${attempt}/${maxAttempts})`, attempt);
@@ -142,6 +166,7 @@ export async function prepareRagPythonEnvironment(
             '--no-input',
             '--upgrade-strategy',
             'only-if-needed',
+            ...(torchConstraint ? ['--constraint', torchConstraint] : []),
             '--index-url',
             packageIndexUrl,
             serviceDirectory,
@@ -182,6 +207,25 @@ export async function prepareRagPythonEnvironment(
     throw error;
   } finally {
     activePreparations.delete(key);
+  }
+}
+
+async function probeTorchVersion(executable: string, signal?: AbortSignal): Promise<string | undefined> {
+  const script = [
+    'import importlib.util,json',
+    "spec=importlib.util.find_spec('torch')",
+    "print(json.dumps({'version':None} if spec is None else {'version':__import__('torch').__version__.split('+',1)[0]}))",
+  ].join(';');
+  try {
+    const result = await runCommand(executable, ['-c', script], signal);
+    const parsed = JSON.parse(result.stdout) as { version?: unknown };
+    const version = parsed.version;
+    return typeof version === 'string' && /^\d+(?:\.\d+)+(?:[a-z0-9.!-]+)?$/iu.test(version)
+      ? version
+      : undefined;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return undefined;
   }
 }
 

@@ -300,7 +300,7 @@ export async function probeRagPython(
   const executable = pythonExecutableFrom(options);
   const script = [
     'import importlib.util,json,platform',
-    "mods=['fastapi','uvicorn','qdrant_client','FlagEmbedding','huggingface_hub']",
+    "mods=['fastapi','uvicorn','qdrant_client','FlagEmbedding','huggingface_hub','torch']",
     "missing=[m for m in mods if importlib.util.find_spec(m) is None]",
     "print(json.dumps({'pythonVersion':platform.python_version(),'missingPackages':missing}))",
   ].join(';');

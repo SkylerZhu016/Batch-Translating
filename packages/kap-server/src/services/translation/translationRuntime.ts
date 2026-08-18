@@ -8,6 +8,7 @@ import {
   BgeM3ModelManager,
   TranslationRagService,
   checkModelDownloadDiskSpace,
+  prepareRagPythonEnvironment,
   probeRagPython,
   type DiscoveredModel,
   type ModelDownloadProgress,
@@ -188,6 +189,7 @@ export class TranslationRuntime {
   };
   private discoveredModel: DiscoveredModel | undefined;
   private ragService: TranslationRagService | undefined;
+  private ragPythonExecutable: string | undefined;
   private downloadController: AbortController | undefined;
   private downloadPromise: Promise<void> | undefined;
   private closed = false;
@@ -1052,7 +1054,7 @@ export class TranslationRuntime {
         error: undefined,
         errorCode: undefined,
       };
-      await this.startRagForModel(this.discoveredModel);
+      await this.startRagForModel(this.discoveredModel, options.controller.signal);
     } catch (error) {
       if (options.controller.signal.aborted) {
         this.bgeState = {
@@ -1068,9 +1070,26 @@ export class TranslationRuntime {
     }
   }
 
-  private async startRagForModel(model: DiscoveredModel): Promise<void> {
+  private async startRagForModel(model: DiscoveredModel, signal?: AbortSignal): Promise<void> {
     await this.stopRagService();
-    const python = await probeRagPython();
+    let python = await probeRagPython(
+      this.ragPythonExecutable ? { pythonExecutable: this.ragPythonExecutable } : undefined,
+    );
+    if (!python.available) {
+      try {
+        const prepared = await prepareRagPythonEnvironment({
+          homeDirectory: this.homeDir,
+          packageIndex: this.bgeState.source,
+          signal,
+        });
+        this.ragPythonExecutable = prepared.pythonExecutable;
+        python = await probeRagPython({ pythonExecutable: prepared.pythonExecutable });
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        this.markBgeFailure(error, 'service_unavailable');
+        return;
+      }
+    }
     if (!python.available) {
       this.bgeState = {
         ...this.bgeState,
@@ -1088,6 +1107,7 @@ export class TranslationRuntime {
     }
     try {
       const service = await TranslationRagService.start({
+        pythonExecutable: python.pythonExecutable,
         dataRoot: this.ragDataRoot,
         modelPath: model.directory,
         host: '127.0.0.1',

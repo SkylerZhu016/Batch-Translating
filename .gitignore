@@ -40,6 +40,8 @@ apps/batch-translating-core/scripts/fixtures/
 # Local RAG environments and runtime data; production Python/TypeScript stays tracked.
 packages/translation-rag/.venv/
 packages/translation-rag/service/.venv/
+packages/translation-rag/service/**/__pycache__/
+packages/translation-rag/service/**/*.py[cod]
 packages/translation-rag/.cache/
 packages/translation-rag/.models/
 packages/translation-rag/model-cache/
