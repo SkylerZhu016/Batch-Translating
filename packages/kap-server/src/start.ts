@@ -13,6 +13,7 @@ import {
   drainSessionIndexMirror,
   IConfigService,
   IEventService,
+  IFileService,
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
@@ -84,6 +85,7 @@ import {
 import { createCredentialValidator } from './services/auth/credentials';
 import { resolvePasswordHash } from './services/auth/password';
 import { createTokenStore } from './services/auth/tokenStore';
+import { TranslationRuntime } from './services/translation/translationRuntime';
 
 // Temporary feature: global message search. Importing this module registers
 // `IGlobalSearchService` (App scope) into the DI registry as a side effect, so
@@ -262,6 +264,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     },
     [...logSeed(logging), ...(opts.seeds ?? [])],
   );
+  const translationRuntime = new TranslationRuntime({
+    homeDir,
+    fileService: core.accessor.get(IFileService),
+    logger,
+  });
 
   // Attach the cloud telemetry appender BEFORE any session is created:
   // `session_started` / `session_load_failed` fire inside create()/resume(), so
@@ -371,6 +378,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const close = async (): Promise<void> => {
     await app.close();
+    try {
+      await translationRuntime.close();
+    } catch (error) {
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'translation runtime shutdown failed; continuing server cleanup',
+      );
+    }
     configWarningSubscription.dispose();
     authFailureLimiter?.dispose();
     modelCatalogRefreshScheduler.dispose();
@@ -474,6 +489,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           { name: 'terminals', description: 'PTY terminal sessions' },
           { name: 'fs', description: 'Filesystem operations' },
           { name: 'files', description: 'File upload & download' },
+          {
+            name: 'translation',
+            description: 'Immutable translation projects, completion gates, and local BGE-M3 RAG',
+          },
         ],
       },
       transformObject: (documentObject) => {
@@ -510,6 +529,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     connectionRegistry,
     broadcaster,
     transcriptService,
+    translationRuntime,
     dangerousBypassAuth: opts.disableAuth === true,
   });
 

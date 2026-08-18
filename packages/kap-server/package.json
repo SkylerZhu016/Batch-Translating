@@ -21,6 +21,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@batch-translating/translation-domain": "workspace:^",
+    "@batch-translating/translation-rag": "workspace:^",
+    "@batch-translating/translation-tools": "workspace:^",
     "@fastify/multipart": "^10.0.0",
     "@fastify/swagger": "^9.7.0",
     "@moonshot-ai/agent-core-v2": "workspace:^",
