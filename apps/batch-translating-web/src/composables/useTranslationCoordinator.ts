@@ -373,6 +373,29 @@ export function buildTranslationCoordinatorGoal(
   project: TranslationProject,
   model?: string,
 ): string {
+  const pinnedModel = model?.trim()
+    ? `the session model "${model.trim()}"`
+    : 'the model pinned to this session';
+  const sourceIdentity = project.source.sha256
+    ? `source SHA-256 ${project.source.sha256}`
+    : 'the verified immutable source receipt';
+
+  // Native Goal objectives are intentionally compact (the server caps them at
+  // 4,000 characters) and contain only stable project identity. Mutable paths,
+  // instruction versions and the full execution contract belong in the
+  // idempotent starter prompt below, not in the Goal recovery key.
+  return [
+    `Complete translation project ${project.projectId} (${sourceIdentity}) as a publication-ready Chinese book.`,
+    `Use only ${pinnedModel}; never switch providers or models.`,
+    `Follow the deterministic project ledger and quality policy for plan ${project.planFingerprint}; validate the final book and technical report before completing the goal.`,
+    'Treat ordinary user messages as live steering. Only an explicit Stop or Cancel action cancels the project.',
+  ].join(' ');
+}
+
+export function buildTranslationCoordinatorPrompt(
+  project: TranslationProject,
+  model?: string,
+): string {
   const enabledQualityGates = [
     'one translation pass and one review pass are mandatory',
     project.workflow.secondTranslation ? 'a second translation pass is enabled' : null,
@@ -647,6 +670,7 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
         );
       }
       const objective = buildTranslationCoordinatorGoal(project, pinnedModel);
+      const coordinatorPrompt = buildTranslationCoordinatorPrompt(project, pinnedModel);
 
       let goal: AppGoal | null;
       try {
@@ -789,7 +813,7 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       try {
         outcome = await host.submitPromptToSession(
           sessionId,
-          objective,
+          coordinatorPrompt,
           launch.attachments,
           {
             profile: TRANSLATION_COORDINATOR_PROFILE,
