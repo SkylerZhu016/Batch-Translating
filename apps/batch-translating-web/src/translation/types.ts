@@ -200,6 +200,36 @@ export interface TranslationCheckpoint {
   completedTaskIds: string[];
 }
 
+export type TranslationCoordinatorLaunchStatus =
+  | 'prepared'
+  | 'uncertain'
+  | 'accepted'
+  | 'rejected';
+
+export interface TranslationCoordinatorAttachment {
+  fileId: string;
+  kind: 'image' | 'video' | 'file';
+  name?: string;
+  mediaType?: string;
+  size?: number;
+}
+
+/**
+ * Durable exactly-once handshake for the Coordinator's first paid prompt.
+ * `launchId` is also the daemon idempotency key; attachments are retained so
+ * a browser restart can reconstruct the identical request.
+ */
+export interface TranslationCoordinatorLaunch {
+  launchId: string;
+  attempt: number;
+  status: TranslationCoordinatorLaunchStatus;
+  preparedAt: string;
+  updatedAt: string;
+  promptId?: string;
+  goalId?: string;
+  attachments: TranslationCoordinatorAttachment[];
+}
+
 export type OverrideScope =
   | { kind: 'project' }
   | { kind: 'chapter'; chapterId: string }
@@ -227,6 +257,10 @@ export interface TranslationProject {
   schemaVersion: TranslationProjectSchemaVersion;
   projectId: string;
   name: string;
+  /** Model pinned for every paid Coordinator turn. Optional only for legacy imports. */
+  model?: string;
+  /** Optional only for legacy projects created before the native Coordinator. */
+  coordinatorLaunch?: TranslationCoordinatorLaunch;
   revision: number;
   createdAt: string;
   updatedAt: string;

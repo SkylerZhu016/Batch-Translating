@@ -12,6 +12,8 @@ const props = withDefaults(defineProps<{
   open: boolean;
   title?: string;
   description?: string;
+  /** Accessible name for dialogs whose visual heading is rendered in the body. */
+  ariaLabel?: string;
   closeOnOverlay?: boolean;
   closeOnEsc?: boolean;
   /** md 440 (default) · lg 640 · xl 760 (var(--p-content-max)). */
@@ -140,6 +142,7 @@ onBeforeUnmount(() => {
         :class="[`ui-dialog--${size}`, { 'ui-dialog--flush': !padded, 'ui-dialog--fixed-height': height === 'fixed' }]"
         role="dialog"
         aria-modal="true"
+        :aria-label="ariaLabel || title || undefined"
         tabindex="-1"
       >
         <div v-if="title || $slots.head" class="ui-dialog__head">

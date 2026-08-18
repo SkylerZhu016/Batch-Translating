@@ -51,6 +51,10 @@ export interface ISessionMetadata {
   readonly onDidChangeMetadata: Event<SessionMetadataChangedEvent>;
   read(): Promise<SessionMeta>;
   update(patch: SessionMetaPatch): Promise<void>;
+  /** Atomically merge keys into the durable custom metadata map. */
+  patchCustom?(patch: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Publish create-time metadata after the lifecycle transaction commits. */
+  commitInitial?(): Promise<void>;
   setTitle(title: string): Promise<void>;
   setArchived(archived: boolean): Promise<void>;
   registerAgent(agentId: string, meta: AgentMeta): Promise<void>;

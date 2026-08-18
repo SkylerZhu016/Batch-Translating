@@ -63,6 +63,7 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
   );
   private readonly scope: string;
   private updateQueue: Promise<void> = Promise.resolve();
+  private mirrorDeferred: boolean;
 
   constructor(
     @ISessionStateService private readonly states: ISessionStateService,
@@ -74,6 +75,7 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
     super();
     this.states.register(sessionMetadataDataKey);
     this.scope = ctx.metaScope;
+    this.mirrorDeferred = ctx.metadataBootstrap?.deferMirror === true;
     this.onDidChangeMetadata = this._onDidChangeMetadata.event;
     this.ready = this.load();
   }
@@ -93,6 +95,20 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
 
   async update(patch: SessionMetaPatch): Promise<void> {
     return this.enqueueUpdate(() => this.applyUpdate(patch));
+  }
+
+  async patchCustom(patch: Readonly<Record<string, unknown>>): Promise<void> {
+    return this.enqueueUpdate(async () => {
+      await this.ready;
+      await this.applyUpdate({ custom: { ...this.data.custom, ...patch } });
+    });
+  }
+
+  async commitInitial(): Promise<void> {
+    await this.ready;
+    if (!this.mirrorDeferred) return;
+    this.mirrorDeferred = false;
+    this.mirrorToReadModel();
   }
 
   private async applyUpdate(patch: SessionMetaPatch): Promise<void> {
@@ -130,6 +146,7 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
   }
 
   private mirrorToReadModel(): void {
+    if (this.mirrorDeferred) return;
     this.mirror.record(
       buildSessionSummary({
         id: this.data.id,
@@ -168,7 +185,10 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
       updatedAt: now,
       archived: false,
       agents: {},
-      custom: {},
+      custom: { ...this.ctx.metadataBootstrap?.custom },
+      ...(this.ctx.metadataBootstrap?.title !== undefined
+        ? { title: this.ctx.metadataBootstrap.title, isCustomTitle: true }
+        : {}),
     };
     await this.store.set(this.scope, META_KEY, this.data);
     this.mirrorToReadModel();

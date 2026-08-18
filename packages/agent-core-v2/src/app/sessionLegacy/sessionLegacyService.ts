@@ -76,7 +76,19 @@ export class SessionLegacyService implements ISessionLegacyService {
 
     const metadataPatch = body.metadata;
     if (metadataPatch !== undefined && Object.keys(metadataPatch).length > 0) {
-      await metadata.update({ custom: { ...(metadataPatch as Record<string, unknown>) } });
+      // POST /profile is a patch surface. Merge inside SessionMetadata's own
+      // serialized update queue so a translation status write cannot erase
+      // unrelated custom metadata or lose a racing custom-key update.
+      if (metadata.patchCustom !== undefined) {
+        await metadata.patchCustom(metadataPatch as Record<string, unknown>);
+      } else {
+        // Compatibility for alternate/test metadata implementations. The real
+        // SessionMetadata path above performs the merge inside its update queue.
+        const current = await metadata.read();
+        await metadata.update({
+          custom: { ...current.custom, ...(metadataPatch as Record<string, unknown>) },
+        });
+      }
     }
 
     const agentConfig = body.agent_config;

@@ -4,8 +4,9 @@
  * Owns the main-agent goal lifecycle; persists the goal in the `wire`
  * `GoalModel` (`GoalState | null`) through the `goal.create` / `goal.update` /
  * `goal.clear` Ops (`wire.dispatch`), reads it through `wire.getModel`,
- * publishes `goal.updated` live to `IEventBus`, and forces a replayed `active`
- * goal back to `paused` via `wire.hooks.onDidRestore`. The accumulated
+ * publishes `goal.updated` live to `IEventBus`, retains a terminal `complete`
+ * snapshot until the next goal/cancel for crash-safe consumers, and forces a
+ * replayed `active` goal back to `paused` via `wire.hooks.onDidRestore`. The accumulated
  * `wallClockMs` lives in the Model (set from each Op payload, never by
  * `Date.now()` inside `apply`); the active interval's epoch-ms
  * `wallClockResumedAt` anchor is
@@ -533,6 +534,13 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
 
   private prepareForGoalCreation(replace: boolean): void {
     if (this.goalState === null) return;
+    // Completion is a durable receipt, not an active ownership lock. Keep it
+    // readable across restart, then retire it automatically when the next goal
+    // is created so callers do not need a special replace dance after success.
+    if (this.goalState.status === 'complete') {
+      this.clearInternal('system');
+      return;
+    }
     if (!replace) {
       throw new Error2(
         ErrorCodes.GOAL_ALREADY_EXISTS,
@@ -659,7 +667,9 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     const snapshot = this.toSnapshot(completed);
     this.emitCompletion(completed, snapshot, input.reason, actor);
     this.trackStatusChanged(completed, actor);
-    this.clearInternal(actor, { preserveLiveContinuation: true });
+    // Keep the terminal model on the wire. GET /goal can then recover a
+    // completion whose live event or downstream metadata write was lost.
+    this.settleGoalRuntime({ preserveLiveContinuation: true });
     return snapshot;
   }
 
@@ -999,7 +1009,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     const state = this.goalState;
     if (state === null) return;
     if (state.status === 'complete') {
-      this.clearInternal('runtime', { emit: false, track: false });
+      this.settleGoalRuntime();
       return;
     }
     if (state.status !== 'active') return;
@@ -1029,13 +1039,19 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     opts: { readonly emit?: boolean; readonly track?: boolean; readonly preserveLiveContinuation?: boolean } = {},
   ): void {
     if (this.goalState === null) return;
+    this.settleGoalRuntime({ preserveLiveContinuation: opts.preserveLiveContinuation });
+    this.wire.dispatch(clearGoal({}));
+    if (opts.emit !== false) this.emitGoalUpdated(null);
+    if (opts.track !== false) this.telemetry.track2('goal_cleared', { actor });
+  }
+
+  private settleGoalRuntime(
+    opts: { readonly preserveLiveContinuation?: boolean } = {},
+  ): void {
     this.resumeContinuation = undefined;
     this.cancelPendingContinuation(opts.preserveLiveContinuation === true);
     this.wallClockDeadline.clear();
     this.liveWallClockStartedAt = undefined;
-    this.wire.dispatch(clearGoal({}));
-    if (opts.emit !== false) this.emitGoalUpdated(null);
-    if (opts.track !== false) this.telemetry.track2('goal_cleared', { actor });
   }
 
   private applyLifecycle(

@@ -1456,8 +1456,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     sid: string,
     text: string,
     attachments?: PromptAttachment[],
-    options?: { profile?: string; disabledTools?: string[]; permissionMode?: 'manual' | 'auto' | 'yolo' },
-  ): Promise<'ok' | 'rejected' | 'uncertain'> {
+    options?: {
+      profile?: string;
+      disabledTools?: string[];
+      permissionMode?: 'manual' | 'auto' | 'yolo';
+      idempotencyKey?: string;
+    },
+  ): Promise<'ok' | 'terminal' | 'rejected' | 'uncertain'> {
     // Mark this session as having a prompt in flight BEFORE any await, so a racing
     // sendPrompt sees it and enqueues. Cleared when the main turn ends (or the
     // prompt dies without one). beginLocalTurn also bumps the snapshot generation
@@ -1531,6 +1536,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
       const result = await api.submitPrompt(sid, {
         content,
+        idempotencyKey: options?.idempotencyKey,
         profile: options?.profile,
         disabledTools: options?.disabledTools,
         model,
@@ -1557,7 +1563,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
       // Authoritative prompt_id for :abort — race-free (the projector binding can
       // lose to a fast turn.started and synthesize a `pr_…` id the daemon rejects).
-      rawState.promptIdBySession = { ...rawState.promptIdBySession, [sid]: result.promptId };
+      if (result.terminal === true || result.status === 'blocked') {
+        rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
+        const nextPromptIds = { ...rawState.promptIdBySession };
+        delete nextPromptIds[sid];
+        rawState.promptIdBySession = nextPromptIds;
+      } else {
+        rawState.promptIdBySession = { ...rawState.promptIdBySession, [sid]: result.promptId };
+      }
 
       // Reconcile without changing the id: ChatPane keys user turns by message id,
       // so replacing msg_opt_* with userMessageId remounts the bubble and flickers.
@@ -1566,6 +1579,15 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       updateSessionMessages(sid, (msgs) => {
         const idx = msgs.findIndex((m) => m.id === tempId);
         if (idx === -1) return msgs;
+        const alreadyPresent = msgs.some(
+          (message, messageIndex) => (
+            messageIndex !== idx
+            && (message.id === result.userMessageId || message.promptId === result.promptId)
+          ),
+        );
+        if (alreadyPresent || result.terminal === true) {
+          return msgs.filter((_, messageIndex) => messageIndex !== idx);
+        }
         const updated = [...msgs];
         updated[idx] = { ...updated[idx]!, promptId: updated[idx]!.promptId ?? result.promptId };
         return updated;
@@ -1576,14 +1598,20 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // pr_ id the daemon rejects on :abort). Stop's authoritative prompt_id
       // comes from the submit response above and the daemon's
       // event.session.status_changed — this binding is for transcript grouping.
-      getEventConn()?.bindNextPromptId(sid, result.promptId);
+      if (result.terminal !== true && result.status !== 'blocked') {
+        getEventConn()?.bindNextPromptId(sid, result.promptId);
+      }
 
       // NOTE: we no longer set a local auto-title here. The daemon generates a
       // smarter title from the first prompt and announces it via
       // session.meta.updated (projected to sessionMetaUpdated). PATCHing a title
       // locally would mark the session isCustomTitle=true and SUPPRESS the
       // daemon's auto-title, so we let the daemon own it.
-      return 'ok';
+      return result.status === 'blocked'
+        ? 'rejected'
+        : result.terminal === true
+          ? 'terminal'
+          : 'ok';
     } catch (err) {
       // Submit failed — clear the in-flight flag so the next prompt isn't stuck
       // queued forever (turn.ended will never arrive), and roll back the
@@ -1640,9 +1668,12 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    * prompt behind the active one) then POST /prompts:steer. Falls back to a
    * normal send when the session is idle.
    */
-  async function steerPrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {
-    const sid = rawState.activeSessionId;
-    if (!sid) return;
+  async function steerPromptToSession(
+    sid: string,
+    text: string,
+    attachments?: PromptAttachment[],
+    options?: { permissionMode?: PermissionMode },
+  ): Promise<void> {
 
     // Merge queued texts (oldest first) + the live text, like the TUI does.
     const queue = rawState.queuedBySession[sid] ?? [];
@@ -1672,8 +1703,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     };
 
     // Idle and nothing in flight — there is no turn to steer into; normal send.
-    if (activity.value === 'idle' && !rawState.inFlightBySession[sid]) {
-      const outcome = await submitPromptInternal(sid, merged, mergedAttachments);
+    const targetSession = rawState.sessions.find((session) => session.id === sid);
+    const targetHasWork = targetSession?.mainTurnActive === true || targetSession?.busy === true;
+    if (!targetHasWork && !rawState.inFlightBySession[sid]) {
+      const outcome = await submitPromptInternal(sid, merged, mergedAttachments, options);
       // Same never-duplicate rule as the running-path catch below: restore
       // the merged entries only on a definitive rejection.
       if (outcome === 'rejected') restoreQueue();
@@ -1720,7 +1753,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         // Resolved against this prompt's own session + model, same as a normal
         // send (see submitPromptInternal).
         thinking: (await modelProvider.resolveThinkingForPrompt(sid, model)) ?? rawState.thinking,
-        permissionMode: rawState.permission,
+        permissionMode: options?.permissionMode ?? rawState.permission,
         planMode: rawState.planModeBySession[sid] ?? false,
         swarmMode: rawState.swarmModeBySession[sid] ?? false,
       });
@@ -1768,6 +1801,12 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
+  async function steerPrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {
+    const sid = rawState.activeSessionId;
+    if (!sid) return;
+    await steerPromptToSession(sid, text, attachments);
+  }
+
   /**
    * Upload an image file to the daemon's /api/v1/files endpoint.
    * Returns { fileId, name, mediaType } on success, or null on error (warning added to state).
@@ -1813,7 +1852,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     if (next === undefined) return;
     rawState.queuedBySession = { ...rawState.queuedBySession, [sid]: rest };
     void submitPromptInternal(sid, next.text, next.attachments).then((outcome) => {
-      if (outcome === 'ok') {
+      if (outcome === 'ok' || outcome === 'terminal') {
         queueFlushFailures.delete(sid);
         return;
       }
@@ -2803,6 +2842,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     handleSessionSnapshot,
     sendPrompt,
     steerPrompt,
+    steerPromptToSession,
     uploadImage,
     enqueue,
     unqueue,

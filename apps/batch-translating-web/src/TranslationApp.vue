@@ -17,6 +17,7 @@ import ProjectDetailsDialog from './components/translation/ProjectDetailsDialog.
 import TranslationIssuesView from './components/translation/TranslationIssuesView.vue';
 import TranslationOutputsView from './components/translation/TranslationOutputsView.vue';
 import TranslationProjectsView from './components/translation/TranslationProjectsView.vue';
+import LanguageSelectionDialog from './components/translation/LanguageSelectionDialog.vue';
 import TranslationRunWorkbench from './components/translation/TranslationRunWorkbench.vue';
 import TranslationSettingsView from './components/translation/TranslationSettingsView.vue';
 import TranslationShell from './components/translation/TranslationShell.vue';
@@ -50,6 +51,11 @@ import type {
 import { useAuthGate } from './composables/useAuthGate';
 import { useConfirmDialog } from './composables/useConfirmDialog';
 import { useKimiWebClient } from './composables/useKimiWebClient';
+import {
+  isAllowedTranslationModel,
+  TRANSLATION_MODEL_PRIORITY,
+} from './composables/useTranslationCoordinator';
+import { localeConfirmed } from './i18n';
 import type {
   ChapterProgress,
   StageRunState,
@@ -73,6 +79,12 @@ const providersLoading = ref(false);
 const providersUnavailable = ref(false);
 const authLogoRef = ref<SVGSVGElement | null>(null);
 const { showAuthGate } = useAuthGate({ client, authLogoRef });
+const showLocaleGate = computed(
+  () => !localeConfirmed.value,
+);
+const showMainUi = computed(
+  () => client.initialized.value && !showAuthGate.value && !showLocaleGate.value,
+);
 const showServerAuth = computed(
   () => !client.dangerousBypassAuth.value && authRequired.value,
 );
@@ -169,9 +181,27 @@ function defaultWorkflow(): TranslationWorkflowOptions {
 }
 
 function defaultModelId(): string {
-  return client.defaultModel.value
-    ?? client.models.value[0]?.id
-    ?? '';
+  const preferred = preferredAvailableTranslationModels()[0]?.id;
+  if (preferred) return preferred;
+  const configured = client.defaultModel.value;
+  if (configured && isAllowedTranslationModel(configured)) return configured;
+  return '';
+}
+
+function translationModelPriority(modelId: string): number {
+  const modelName = modelId.split('/').at(-1)?.trim();
+  const priority = TRANSLATION_MODEL_PRIORITY.findIndex((candidate) => candidate === modelName);
+  return priority === -1 ? TRANSLATION_MODEL_PRIORITY.length : priority;
+}
+
+function preferredAvailableTranslationModels() {
+  const allowed = [...client.models.value]
+    .filter((model) => isAllowedTranslationModel(model.id))
+    .sort((left, right) => translationModelPriority(left.id) - translationModelPriority(right.id));
+  const bestPriority = allowed[0] ? translationModelPriority(allowed[0].id) : undefined;
+  return bestPriority === undefined
+    ? []
+    : allowed.filter((model) => translationModelPriority(model.id) === bestPriority);
 }
 
 function defaultWorkspacePath(): string {
@@ -226,18 +256,26 @@ function loadSettings(): TranslationSettings {
 const createDraft = ref<TranslationProjectDraft>(newProjectDraft());
 const settingsDraft = ref<TranslationSettings>(loadSettings());
 
-watch(
-  () => client.defaultModel.value,
-  (model) => {
-    if (!model) return;
-    if (!settingsDraft.value.defaultModel) settingsDraft.value.defaultModel = model;
-  },
-);
+const modelOptions = computed(() => preferredAvailableTranslationModels()
+  .map((model) => ({
+    value: model.id,
+    label: model.displayName ?? model.model ?? model.id,
+  })));
 
-const modelOptions = computed(() => client.models.value.map((model) => ({
-  value: model.id,
-  label: model.displayName ?? model.model ?? model.id,
-})));
+watch(
+  [modelOptions, () => client.defaultModel.value],
+  ([options, configured]) => {
+    const available = new Set(options.map((option) => option.value));
+    const current = settingsDraft.value.defaultModel;
+    if (current && isAllowedTranslationModel(current) && available.has(current)) return;
+    settingsDraft.value.defaultModel = configured
+      && isAllowedTranslationModel(configured)
+      && available.has(configured)
+      ? configured
+      : (options[0]?.value ?? '');
+  },
+  { immediate: true },
+);
 
 type ProjectSession = {
   sessionId: string;
@@ -282,12 +320,10 @@ function toViewWorkflow(workflow: WorkflowOptions): TranslationWorkflowOptions {
   };
 }
 
-function readyOutputPath(project: TranslationProject): string | undefined {
-  const artifact = project.artifacts.find(
-    (item) => (item.type === 'final_epub' || item.type === 'final_txt') && item.status === 'ready',
-  );
-  if (artifact) return artifact.path;
-  return project.status === 'completed' ? project.paths.finalOutputPath : undefined;
+function readyOutputPath(_project: TranslationProject): string | undefined {
+  // Agent-authored artifact metadata is not an acceptance receipt. Phase 2's
+  // deterministic ledger/merger will expose a byte-verified output path.
+  return undefined;
 }
 
 function toViewProject(entry: ProjectSession): ViewProject {
@@ -530,6 +566,11 @@ async function createProject(): Promise<void> {
     const workspace = client.workspacesView.value.find(
       (item) => item.root === createDraft.value.workspacePath,
     );
+    const selectedModel = modelOptions.value.some(
+      (option) => option.value === settingsDraft.value.defaultModel,
+    )
+      ? settingsDraft.value.defaultModel
+      : modelOptions.value[0]?.value;
     const project = await runner.createTranslationProject({
       name: createDraft.value.title.trim() || createDraft.value.sourcePath.replace(/\.(epub|txt)$/i, ''),
       sourceFile: selectedSourceFile.value ?? undefined,
@@ -537,6 +578,7 @@ async function createProject(): Promise<void> {
       chapterPattern: createDraft.value.chapterPattern?.trim() || undefined,
       projectRoot: createDraft.value.workspacePath,
       workspaceId: workspace?.id,
+      model: selectedModel || undefined,
       workflow: workflowForRunner(createDraft.value.workflow),
       maxAgents: createDraft.value.agentCount,
     });
@@ -683,6 +725,11 @@ async function saveSettings(): Promise<void> {
   try {
     const normalized: TranslationSettings = {
       ...settingsDraft.value,
+      defaultModel: modelOptions.value.some(
+        (option) => option.value === settingsDraft.value.defaultModel,
+      )
+        ? settingsDraft.value.defaultModel
+        : (modelOptions.value[0]?.value ?? ''),
       defaultAgentCount: Math.min(128, Math.max(2, Math.round(settingsDraft.value.defaultAgentCount))),
       defaultWorkflow: {
         ...settingsDraft.value.defaultWorkflow,
@@ -848,24 +895,26 @@ function setUiFont(value: string): void {
 
 <template>
   <div class="translation-app">
-    <ServerAuthDialog v-if="showServerAuth" />
+    <ServerAuthDialog v-if="showServerAuth && !showLocaleGate" />
 
-    <section v-if="showAuthGate" class="translation-auth">
+    <LanguageSelectionDialog v-if="showLocaleGate" />
+
+    <section v-else-if="showAuthGate" class="translation-auth">
       <span class="translation-auth__mark" aria-hidden="true">
         <Icon name="sliders" size="lg" />
       </span>
       <div class="translation-auth__copy">
-        <h1>配置模型接口服务</h1>
-        <p>请填写您的 AI 模型接口 Base URL 和 API Key（兼容 OpenAI、NewAPI、OneAPI、Claude 等）。</p>
+        <h1>{{ t('translation.authGate.title') }}</h1>
+        <p>{{ t('translation.authGate.description') }}</p>
       </div>
       <Button @click="showConfigureProvider = true">
         <Icon name="sliders" size="md" />
-        配置模型服务
+        {{ t('translation.authGate.action') }}
       </Button>
     </section>
 
     <TranslationShell
-      v-else
+      v-else-if="showMainUi"
       :active-view="activeView"
       :project-count="projects.length"
       :issue-count="openIssueCount"
@@ -999,7 +1048,7 @@ function setUiFont(value: string): void {
     </TranslationShell>
 
     <CreateTranslationProjectDialog
-      v-if="!showAuthGate"
+      v-if="showMainUi"
       v-model:open="showCreateProject"
       v-model="createDraft"
       :saving="createSaving"
@@ -1011,7 +1060,7 @@ function setUiFont(value: string): void {
     />
 
     <ProjectDetailsDialog
-      v-if="!showAuthGate"
+      v-if="showMainUi"
       v-model:open="showProjectDetails"
       :project="selectedViewProject"
       @continue="continueProject"
@@ -1020,7 +1069,7 @@ function setUiFont(value: string): void {
     />
 
     <AddWorkspaceDialog
-      v-if="showWorkspacePicker"
+      v-if="showMainUi && showWorkspacePicker"
       :browse-fs="client.browseFs"
       :get-fs-home="client.getFsHome"
       :default-path="createDraft.workspacePath || defaultWorkspacePath()"
@@ -1030,7 +1079,7 @@ function setUiFont(value: string): void {
     />
 
     <ProviderManager
-      v-if="showProviders"
+      v-if="showMainUi && showProviders"
       :providers="client.providers.value"
       :loading="providersLoading"
       :unavailable="providersUnavailable"
@@ -1042,7 +1091,7 @@ function setUiFont(value: string): void {
     />
 
     <EditProviderModelsDialog
-      v-if="editProvider"
+      v-if="showMainUi && editProvider"
       :open="true"
       :provider="editProvider.provider"
       :models="editProvider.models"
@@ -1051,7 +1100,7 @@ function setUiFont(value: string): void {
     />
 
     <ConfigureProviderDialog
-      v-if="showConfigureProvider"
+      v-if="!showLocaleGate && showConfigureProvider"
       :open="showConfigureProvider"
       @update:open="showConfigureProvider = $event"
       @success="onProviderConfigured"
@@ -1059,14 +1108,17 @@ function setUiFont(value: string): void {
     />
 
     <ExitAppDialog
-      v-if="showExitApp"
+      v-if="showMainUi && showExitApp"
       :open="showExitApp"
       @confirm="onExitConfirmed"
       @close="showExitApp = false"
     />
 
     <Transition name="translation-loading-fade">
-      <GlobalLoading v-if="!client.initialized.value" :issue="client.connectIssue.value" />
+      <GlobalLoading
+        v-if="!showLocaleGate && !client.initialized.value"
+        :issue="client.connectIssue.value"
+      />
     </Transition>
     <WarningToasts :warnings="client.warnings.value" @dismiss="client.dismissWarning" />
     <ConfirmDialogHost />

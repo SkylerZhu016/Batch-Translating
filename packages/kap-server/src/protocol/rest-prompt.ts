@@ -32,6 +32,8 @@ export type { PromptPermissionMode, PromptThinking } from '@moonshot-ai/agent-co
 export const promptSubmissionSchema = z.object({
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  /** Client-stable key for exactly-once retries after an ambiguous response. */
+  idempotency_key: z.string().min(1).max(200).optional(),
   agent_id: z.string().min(1).optional(),
   // Agent profile to bind at the target agent's first bind. Once bound,
   // subsequent prompts must repeat the same value or omit the field.
@@ -57,6 +59,8 @@ export const promptItemSchema = z.object({
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
   status: promptStatusSchema,
+  /** True when this acknowledgement refers to an already terminal prompt. */
+  terminal: z.boolean().optional(),
   content: z.array(messageContentSchema).min(1),
   created_at: isoDateTimeSchema,
 });

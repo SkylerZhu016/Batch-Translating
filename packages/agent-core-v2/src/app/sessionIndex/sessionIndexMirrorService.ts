@@ -105,6 +105,15 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     }
   }
 
+  async forget(id: string): Promise<void> {
+    this.pendingMap.delete(id);
+    // A flush takes a stable chunk before its first await. Let that chunk
+    // finish, then delete the id once more; SessionIndex.remove can now run
+    // after us without a late mirror write resurrecting the session.
+    await this.flushing?.catch(() => {});
+    this.pendingMap.delete(id);
+  }
+
   pending(): readonly SessionSummary[] {
     return [...this.pendingMap.values()];
   }

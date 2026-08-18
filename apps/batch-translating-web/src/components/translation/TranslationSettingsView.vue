@@ -7,6 +7,7 @@ import Field from '../ui/Field.vue';
 import Icon from '../ui/Icon.vue';
 import Input from '../ui/Input.vue';
 import Select from '../ui/Select.vue';
+import LanguageSwitcher from '../settings/LanguageSwitcher.vue';
 import type {
   TranslationSettings,
   TranslationWorkflowOptions,
@@ -59,6 +60,19 @@ function updateAgentCount(value: string): void {
     </header>
 
     <div class="settings-view__content">
+      <Card>
+        <template #head>
+          {{ t('translation.settings.languageTitle') }}
+        </template>
+        <div class="settings-view__locale">
+          <div class="settings-view__locale-copy">
+            <span class="settings-view__locale-label">{{ t('translation.settings.languageTitle') }}</span>
+            <span class="settings-view__locale-hint">{{ t('translation.settings.languageHint') }}</span>
+          </div>
+          <LanguageSwitcher :aria-label="t('translation.settings.languageTitle')" />
+        </div>
+      </Card>
+
       <Card>
         <template #head>
           <Icon name="sliders" size="md" />
@@ -228,6 +242,32 @@ function updateAgentCount(value: string): void {
   margin: 0 auto;
 }
 
+.settings-view__locale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.settings-view__locale-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.settings-view__locale-label {
+  color: var(--color-text);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+}
+
+.settings-view__locale-hint {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
 .settings-view__form {
   display: flex;
   flex-direction: column;
@@ -307,6 +347,11 @@ function updateAgentCount(value: string): void {
 
   .settings-view__header,
   .settings-view__row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-view__locale {
     align-items: stretch;
     flex-direction: column;
   }

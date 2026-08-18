@@ -2,6 +2,7 @@
 <!-- Model / Provider API configuration dialog (Custom / OpenAI / Anthropic / OneAPI / NewAPI). -->
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
+import { useI18n } from 'vue-i18n';
 import Dialog from '../ui/Dialog.vue';
 import Button from '../ui/Button.vue';
 import Field from '../ui/Field.vue';
@@ -34,6 +35,7 @@ const emit = defineEmits<{
   }];
   close: [];
 }>();
+const { t } = useI18n();
 
 const form = reactive({
   type: props.initialType || 'openai',
@@ -48,11 +50,11 @@ const successMsg = ref('');
 const fetchedModels = ref<string[]>([]);
 const selectedDefaultModel = ref('');
 
-const PROVIDER_TYPES = [
-  { value: 'openai', label: 'OpenAI 兼容接口 (NewAPI / OneAPI / 通用大模型网关)' },
-  { value: 'anthropic', label: 'Anthropic Claude' },
-  { value: 'google-genai', label: 'Google Gemini' },
-];
+const providerTypes = computed(() => [
+  { value: 'openai', label: t('translation.providerConfig.typeOpenAi') },
+  { value: 'anthropic', label: t('translation.providerConfig.typeAnthropic') },
+  { value: 'google-genai', label: t('translation.providerConfig.typeGoogle') },
+]);
 
 /** Default context window (tokens) applied to every fetched model when the
  *  provider is saved. Users can adjust it per model later in the provider
@@ -60,9 +62,9 @@ const PROVIDER_TYPES = [
 const DEFAULT_CONTEXT_SIZE = 200_000;
 
 const baseUrlPlaceholder = computed(() => {
-  if (form.type === 'anthropic') return 'https://api.anthropic.com/v1 (留空使用官方默认)';
-  if (form.type === 'google-genai') return 'https://generativelanguage.googleapis.com/v1beta (留空使用官方默认)';
-  return 'https://your-api-gateway.com/v1 (例如 NewAPI / OneAPI 提供的 Base URL)';
+  if (form.type === 'anthropic') return t('translation.providerConfig.anthropicPlaceholder');
+  if (form.type === 'google-genai') return t('translation.providerConfig.googlePlaceholder');
+  return t('translation.providerConfig.openAiPlaceholder');
 });
 
 /** Provider id used when creating the provider (daemon requires a unique id). */
@@ -107,7 +109,10 @@ async function fetchUpstreamModels(): Promise<string[]> {
   const response = await fetch(targetUrl, { method: 'GET', headers });
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
-    throw new Error(`上游接口响应异常 (${response.status}): ${errorBody || response.statusText}`);
+    throw new Error(t('translation.providerConfig.upstreamError', {
+      status: response.status,
+      detail: errorBody || response.statusText,
+    }));
   }
 
   const data = await response.json() as { data?: Array<{ id: string }>; models?: Array<{ id: string }> };
@@ -121,7 +126,7 @@ async function fetchUpstreamModels(): Promise<string[]> {
 
 async function onTestAndFetch(): Promise<void> {
   if (!form.apiKey.trim() && form.type !== 'custom') {
-    errorMsg.value = '请先填写 API Key';
+    errorMsg.value = t('translation.providerConfig.apiKeyFirst');
     return;
   }
   testing.value = true;
@@ -131,9 +136,9 @@ async function onTestAndFetch(): Promise<void> {
     fetchedModels.value = list;
     if (list.length > 0) {
       selectedDefaultModel.value = list[0] ?? '';
-      successMsg.value = `成功连接！已获取到 ${list.length} 个可用模型。`;
+      successMsg.value = t('translation.providerConfig.connectedModels', { count: list.length });
     } else {
-      successMsg.value = '连接成功，但上游返回的模型列表为空。';
+      successMsg.value = t('translation.providerConfig.connectedEmpty');
     }
   } catch (err: unknown) {
     errorMsg.value = err instanceof Error ? err.message : String(err);
@@ -144,7 +149,7 @@ async function onTestAndFetch(): Promise<void> {
 
 async function onSave(): Promise<void> {
   if (!form.apiKey.trim() && form.type !== 'custom') {
-    errorMsg.value = '请填写 API Key';
+    errorMsg.value = t('translation.providerConfig.apiKeyRequired');
     return;
   }
   saving.value = true;
@@ -195,13 +200,13 @@ function onClose(): void {
 <template>
   <Dialog
     :open="open"
-    :title="'配置模型服务 (API / Base URL)'"
+    :title="t('translation.providerConfig.title')"
     size="lg"
     @close="onClose"
   >
     <div class="config-provider-form">
       <p class="config-provider-hint">
-        连接您的 AI 模型接口服务（如 OpenAI 兼容接口、OneAPI、NewAPI 或各大模型官方服务）。应用会自动拉取上游模型列表。
+        {{ t('translation.providerConfig.description') }}
       </p>
 
       <Banner v-if="errorMsg" variant="danger" class="mb-4">
@@ -212,22 +217,28 @@ function onClose(): void {
         {{ successMsg }}
       </Banner>
 
-      <Field label="接口类型 / 协议">
+      <Field :label="t('translation.providerConfig.protocol')">
         <Select v-model="form.type">
-          <option v-for="pt in PROVIDER_TYPES" :key="pt.value" :value="pt.value">
+          <option v-for="pt in providerTypes" :key="pt.value" :value="pt.value">
             {{ pt.label }}
           </option>
         </Select>
       </Field>
 
-      <Field label="服务地址 (Base URL)" hint="请填写 API 服务基础地址。">
+      <Field
+        :label="t('translation.providerConfig.baseUrl')"
+        :hint="t('translation.providerConfig.baseUrlHint')"
+      >
         <Input
           v-model="form.baseUrl"
           :placeholder="baseUrlPlaceholder"
         />
       </Field>
 
-      <Field label="API Key (密钥)" hint="您的接口身份凭证。">
+      <Field
+        :label="t('translation.providerConfig.apiKey')"
+        :hint="t('translation.providerConfig.apiKeyHint')"
+      >
         <Input
           v-model="form.apiKey"
           type="password"
@@ -242,14 +253,14 @@ function onClose(): void {
           @click="onTestAndFetch"
         >
           <Icon name="refresh" size="sm" />
-          测试连接并自动获取模型列表
+          {{ t('translation.providerConfig.testConnection') }}
         </Button>
       </div>
 
       <Field
         v-if="fetchedModels.length > 0"
-        label="已探测到的上游模型"
-        :hint="`共获取到 ${fetchedModels.length} 个模型。上下文窗口默认 200k tokens，保存后可在 设置 → 提供商管理 中调整。`"
+        :label="t('translation.providerConfig.detectedModels')"
+        :hint="t('translation.providerConfig.detectedModelsHint', { count: fetchedModels.length })"
       >
         <Select v-model="selectedDefaultModel">
           <option v-for="m in fetchedModels" :key="m" :value="m">
@@ -262,10 +273,10 @@ function onClose(): void {
     <template #foot>
       <div class="dialog-actions">
         <Button variant="secondary" @click="onClose">
-          取消
+          {{ t('common.cancel') }}
         </Button>
         <Button variant="primary" :loading="saving" @click="onSave">
-          保存并启用
+          {{ t('translation.providerConfig.saveEnable') }}
         </Button>
       </div>
     </template>

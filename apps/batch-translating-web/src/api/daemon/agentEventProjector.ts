@@ -1348,7 +1348,10 @@ export function createAgentProjector(): AgentProjector {
         out.push({
           type: 'goalUpdated',
           sessionId,
-          goal: goal?.status === 'complete' ? null : goal,
+          // Preserve the terminal snapshot for domain consumers (for example,
+          // the translation Coordinator). The reducer still removes completed
+          // goals from the transient goal card after observing this event.
+          goal,
         });
         break;
       }

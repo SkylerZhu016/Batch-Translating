@@ -125,6 +125,12 @@ export interface ISessionIndexMirror {
    * reconciliation.
    */
   record(summary: SessionSummary): void;
+  /**
+   * Drop a session that is being deleted or whose creation was rolled back.
+   * Implementations wait for an already-running flush so the caller can evict
+   * the persisted read-model entry afterwards without a stale write racing it.
+   */
+  forget?(id: string): Promise<void>;
   /** Summaries accepted but not yet flushed (read-your-writes window). */
   pending(): readonly SessionSummary[];
   /** Flush everything currently queued; resolves with the queue empty. */

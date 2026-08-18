@@ -215,6 +215,7 @@ export interface WireMessage {
 export interface WirePromptSubmission {
   content: WireMessageContent[];
   metadata?: Record<string, unknown>;
+  idempotency_key?: string;
   agent_id?: string;
   profile?: string;
   disabled_tools?: string[];
@@ -231,7 +232,8 @@ export interface WirePromptSubmitResult {
   prompt_id: string;
   user_message_id: string;
   /** 'running' = started immediately; 'queued' = parked behind the active prompt. */
-  status?: 'running' | 'queued';
+  status?: 'running' | 'queued' | 'blocked';
+  terminal?: boolean;
 }
 
 export interface WirePromptSteerResult {

@@ -50,8 +50,8 @@ import {
 } from './client/useWorkspaceState';
 import {
   TRANSLATION_METADATA_KEY,
-  useTranslationRunner,
-} from './useTranslationRunner';
+  useTranslationCoordinator,
+} from './useTranslationCoordinator';
 
 const appearance = useAppearance();
 const notification = useNotification();
@@ -720,6 +720,10 @@ async function refreshSessionGoal(sessionId: string): Promise<void> {
   if (goal === null || goal.status === 'complete') delete nextGoals[sessionId];
   else nextGoals[sessionId] = goal;
   rawState.goalBySession = nextGoals;
+  // The goal card is only a transient projection. Fold the durable recovery
+  // snapshot into the translation domain as well, so a reload cannot leave a
+  // paused/blocked/completed native goal displayed as a running project.
+  await translationCoordinator.onGoalUpdated(sessionId, goal);
 }
 
 /** Persist runtime controls to a session via POST /profile, then re-read
@@ -911,6 +915,10 @@ function processEvent(appEvent: AppEvent, meta: KimiEventMeta): void {
   // is kept, only a marker line records the compaction).
   applyEvent(appEvent, meta.sessionId, meta.seq);
 
+  if (appEvent.type === 'goalUpdated' && meta.seq > prevSeq) {
+    void translationCoordinator.onGoalUpdated(appEvent.sessionId, appEvent.goal);
+  }
+
   const sideTarget = sideChat.sideChatTargetBySession.value[meta.sessionId];
   if (sideTarget) {
     const { agentId } = sideTarget;
@@ -975,9 +983,9 @@ function processEvent(appEvent: AppEvent, meta: KimiEventMeta): void {
       wasMainTurnActive,
     );
     if (reason === 'cancelled' || reason === 'failed' || reason === 'blocked') {
-      void translationRunner.onMainTurnStopped(appEvent.sessionId, reason);
+      void translationCoordinator.onMainTurnStopped(appEvent.sessionId, reason);
     } else {
-      void translationRunner.onMainTurnCompleted(appEvent.sessionId);
+      void translationCoordinator.onMainTurnCompleted(appEvent.sessionId);
     }
   }
 
@@ -2642,19 +2650,84 @@ const workspaceState = useWorkspaceState(rawState, {
  *  UI projection: translation metadata lives only on AppSession. */
 const appSessions = computed<AppSession[]>(() => rawState.sessions);
 
-const translationRunner = useTranslationRunner({
+function preserveTranslationSessionProjection(
+  incoming: AppSession,
+  previous?: AppSession,
+  pinnedModel?: string,
+): AppSession {
+  return {
+    ...incoming,
+    model: incoming.model?.trim() || pinnedModel?.trim() || previous?.model?.trim() || '',
+    // Session profile responses intentionally carry placeholder usage. Never
+    // erase the live counters already folded in from /status or WebSocket.
+    usage: previous && isPlaceholderSessionUsage(incoming.usage)
+      ? previous.usage
+      : incoming.usage,
+  };
+}
+
+const translationCoordinator = useTranslationCoordinator({
   sessions: appSessions,
   activeSessionId,
-  activity,
+  availableModelIds: computed(() => modelProvider.models.value.map((model) => model.id)),
   createSession: async (input) => {
-    const session = await getKimiWebApi().createSession(input);
+    const session = preserveTranslationSessionProjection(
+      await getKimiWebApi().createSession(input),
+      undefined,
+      input.model,
+    );
     upsertSessionFront(session);
     return session;
   },
   updateSessionMetadata: async (sessionId, project) => {
-    const session = await getKimiWebApi().updateSession(sessionId, {
+    const previous = rawState.sessions.find((candidate) => candidate.id === sessionId);
+    const session = preserveTranslationSessionProjection(await getKimiWebApi().updateSession(sessionId, {
       metadata: { [TRANSLATION_METADATA_KEY]: project },
-    });
+    }), previous);
+    updateSession(sessionId, () => session);
+    return session;
+  },
+  ensureSessionModel: async (sessionId, model) => {
+    const previous = rawState.sessions.find((candidate) => candidate.id === sessionId);
+    const session = preserveTranslationSessionProjection(
+      await getKimiWebApi().updateSession(sessionId, { model }),
+      previous,
+      model,
+    );
+    updateSession(sessionId, () => session);
+    return session;
+  },
+  loadSessionModel: async (sessionId) => {
+    const runtime = await getKimiWebApi().getSessionStatus(sessionId);
+    const previous = rawState.sessions.find((candidate) => candidate.id === sessionId);
+    const model = runtime.model?.trim() || previous?.model?.trim();
+    if (previous !== undefined && model) {
+      updateSession(sessionId, (session) => ({
+        ...session,
+        model,
+        usage: {
+          ...session.usage,
+          contextTokens: runtime.contextTokens,
+          contextLimit: runtime.maxContextTokens,
+        },
+      }));
+    }
+    return model || undefined;
+  },
+  getSessionGoal: async (sessionId) => getKimiWebApi().getSessionGoal(sessionId),
+  setSessionGoal: async (sessionId, objective) => {
+    const previous = rawState.sessions.find((candidate) => candidate.id === sessionId);
+    const session = preserveTranslationSessionProjection(await getKimiWebApi().updateSession(sessionId, {
+      goalObjective: objective,
+    }), previous);
+    updateSession(sessionId, () => session);
+    return session;
+  },
+  controlSessionGoal: async (sessionId, action) => {
+    const previous = rawState.sessions.find((candidate) => candidate.id === sessionId);
+    const session = preserveTranslationSessionProjection(await getKimiWebApi().updateSession(sessionId, {
+      goalControl: action,
+    }), previous);
     updateSession(sessionId, () => session);
     return session;
   },
@@ -2663,7 +2736,7 @@ const translationRunner = useTranslationRunner({
   },
   selectSession: workspaceState.selectSession,
   submitPromptToSession: workspaceState.submitPromptInternal,
-  steerPrompt: workspaceState.steerPrompt,
+  steerPrompt: workspaceState.steerPromptToSession,
   abortSession: async (sessionId) => {
     await getKimiWebApi().abortSession(sessionId);
   },
@@ -2676,19 +2749,6 @@ const translationRunner = useTranslationRunner({
       mediaType: uploaded.mediaType,
       size: uploaded.size,
     };
-  },
-  readSessionFile: async (sessionId, path) => {
-    try {
-      const result = await getKimiWebApi().readFile(sessionId, { path });
-      return {
-        content: result.content,
-        encoding: result.encoding,
-        isBinary: result.isBinary,
-        truncated: result.truncated,
-      };
-    } catch {
-      return null;
-    }
   },
   forgetSession,
   pushOperationFailure,
@@ -3055,23 +3115,23 @@ export function useKimiWebClient() {
     // App lifecycle: gracefully stop the daemon (used by the exit flow)
     shutdown: workspaceState.shutdown,
 
-    // Deterministic batch-translation domain. These actions own the fixed
-    // stage plan; components never infer the next round from model output.
-    translationProjectSessions: translationRunner.translationProjectSessions,
-    translationProjects: translationRunner.translationProjects,
-    activeTranslationProjectSession: translationRunner.activeTranslationProjectSession,
-    activeTranslationProject: translationRunner.activeTranslationProject,
-    translationCreating: translationRunner.creating,
-    translationLoadingBySession: translationRunner.loadingBySession,
-    translationErrorBySession: translationRunner.errorBySession,
-    createTranslationProject: translationRunner.createTranslationProject,
-    updateTranslationProjectMetadata: translationRunner.updateTranslationProjectMetadata,
-    deleteTranslationProject: translationRunner.deleteTranslationProject,
-    selectTranslationProject: translationRunner.selectTranslationProject,
-    startTranslationRun: translationRunner.startTranslationRun,
-    resumeTranslationRun: translationRunner.resumeTranslationRun,
-    pauseTranslationRun: translationRunner.pauseTranslationRun,
-    applyUserOverride: translationRunner.applyUserOverride,
+    // Native-session batch-translation domain. The Coordinator and durable
+    // ledger own scheduling; UI components never advance a fixed paid stage.
+    translationProjectSessions: translationCoordinator.translationProjectSessions,
+    translationProjects: translationCoordinator.translationProjects,
+    activeTranslationProjectSession: translationCoordinator.activeTranslationProjectSession,
+    activeTranslationProject: translationCoordinator.activeTranslationProject,
+    translationCreating: translationCoordinator.creating,
+    translationLoadingBySession: translationCoordinator.loadingBySession,
+    translationErrorBySession: translationCoordinator.errorBySession,
+    createTranslationProject: translationCoordinator.createTranslationProject,
+    updateTranslationProjectMetadata: translationCoordinator.updateTranslationProjectMetadata,
+    deleteTranslationProject: translationCoordinator.deleteTranslationProject,
+    selectTranslationProject: translationCoordinator.selectTranslationProject,
+    startTranslationRun: translationCoordinator.startTranslationRun,
+    resumeTranslationRun: translationCoordinator.resumeTranslationRun,
+    pauseTranslationRun: translationCoordinator.pauseTranslationRun,
+    applyUserOverride: translationCoordinator.applyUserOverride,
   };
 }
 

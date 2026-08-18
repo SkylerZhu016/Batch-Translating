@@ -63,6 +63,36 @@ export const TRANSLATION_PROJECT_JSON_SCHEMA = {
     schemaVersion: { const: TRANSLATION_PROJECT_SCHEMA_VERSION },
     projectId: { type: 'string', minLength: 1 },
     name: { type: 'string', minLength: 1 },
+    model: { type: 'string', minLength: 1 },
+    coordinatorLaunch: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['launchId', 'attempt', 'status', 'preparedAt', 'updatedAt', 'attachments'],
+      properties: {
+        launchId: { type: 'string', minLength: 1 },
+        attempt: { type: 'integer', minimum: 1 },
+        status: { enum: ['prepared', 'uncertain', 'accepted', 'rejected'] },
+        preparedAt: { type: 'string', format: 'date-time' },
+        updatedAt: { type: 'string', format: 'date-time' },
+        promptId: { type: 'string', minLength: 1 },
+        goalId: { type: 'string', minLength: 1 },
+        attachments: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['fileId', 'kind'],
+            properties: {
+              fileId: { type: 'string', minLength: 1 },
+              kind: { enum: ['image', 'video', 'file'] },
+              name: { type: 'string' },
+              mediaType: { type: 'string' },
+              size: { type: 'integer', minimum: 0 },
+            },
+          },
+        },
+      },
+    },
     revision: { type: 'integer', minimum: 0 },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
@@ -108,6 +138,8 @@ export const TRANSLATION_PROJECT_JSON_SCHEMA = {
 
 export interface CreateTranslationProjectInput {
   name: string;
+  /** Model pinned by the native translation Coordinator. */
+  model?: string;
   sourcePath: string;
   /** Optional explicit kind; derived from the file extension when absent. */
   kind?: TranslationSourceKind;
@@ -221,6 +253,9 @@ export function createTranslationProject(
   if (input.projectId !== undefined && !input.projectId.trim()) {
     throw new Error('Project ID cannot be empty');
   }
+  if (input.model !== undefined && !input.model.trim()) {
+    throw new Error('Project model cannot be empty');
+  }
   const now = input.now ?? new Date().toISOString();
   if (!isIsoDate(now)) throw new Error('Project timestamp must be a valid ISO date');
   const workflow = { ...input.workflow };
@@ -236,6 +271,7 @@ export function createTranslationProject(
     schemaVersion: TRANSLATION_PROJECT_SCHEMA_VERSION,
     projectId: input.projectId ?? generatedId('translation'),
     name: input.name.trim(),
+    ...(input.model?.trim() ? { model: input.model.trim() } : {}),
     revision: 0,
     createdAt: now,
     updatedAt: now,
@@ -639,6 +675,55 @@ export function parseProjectMetadata(value: unknown): ParseResult<TranslationPro
   }
   if (!isNonEmptyString(migrated.projectId)) errors.push('projectId must be a non-empty string');
   if (!isNonEmptyString(migrated.name)) errors.push('name must be a non-empty string');
+  if (migrated.model !== undefined && !isNonEmptyString(migrated.model)) {
+    errors.push('model must be a non-empty string when present');
+  }
+  if (migrated.coordinatorLaunch !== undefined) {
+    const launch = migrated.coordinatorLaunch;
+    if (!isRecord(launch)) {
+      errors.push('coordinatorLaunch must be an object when present');
+    } else {
+      if (!isNonEmptyString(launch.launchId)) errors.push('coordinatorLaunch.launchId is required');
+      if (!isNonNegativeInteger(launch.attempt) || launch.attempt < 1) {
+        errors.push('coordinatorLaunch.attempt must be a positive integer');
+      }
+      if (!['prepared', 'uncertain', 'accepted', 'rejected'].includes(String(launch.status))) {
+        errors.push('coordinatorLaunch.status is invalid');
+      }
+      if (!isIsoDate(launch.preparedAt)) errors.push('coordinatorLaunch.preparedAt is invalid');
+      if (!isIsoDate(launch.updatedAt)) errors.push('coordinatorLaunch.updatedAt is invalid');
+      if (launch.promptId !== undefined && !isNonEmptyString(launch.promptId)) {
+        errors.push('coordinatorLaunch.promptId must be non-empty when present');
+      }
+      if (launch.goalId !== undefined && !isNonEmptyString(launch.goalId)) {
+        errors.push('coordinatorLaunch.goalId must be non-empty when present');
+      }
+      if (!Array.isArray(launch.attachments)) {
+        errors.push('coordinatorLaunch.attachments must be an array');
+      } else {
+        launch.attachments.forEach((attachment, index) => {
+          const path = `coordinatorLaunch.attachments[${index}]`;
+          if (!isRecord(attachment)) {
+            errors.push(`${path} must be an object`);
+            return;
+          }
+          if (!isNonEmptyString(attachment.fileId)) errors.push(`${path}.fileId is required`);
+          if (!['image', 'video', 'file'].includes(String(attachment.kind))) {
+            errors.push(`${path}.kind is invalid`);
+          }
+          if (attachment.name !== undefined && typeof attachment.name !== 'string') {
+            errors.push(`${path}.name must be a string when present`);
+          }
+          if (attachment.mediaType !== undefined && typeof attachment.mediaType !== 'string') {
+            errors.push(`${path}.mediaType must be a string when present`);
+          }
+          if (attachment.size !== undefined && !isNonNegativeInteger(attachment.size)) {
+            errors.push(`${path}.size must be a non-negative integer when present`);
+          }
+        });
+      }
+    }
+  }
   if (!isNonNegativeInteger(migrated.revision)) errors.push('revision must be a non-negative integer');
   if (!isIsoDate(migrated.createdAt)) errors.push('createdAt must be an ISO date');
   if (!isIsoDate(migrated.updatedAt)) errors.push('updatedAt must be an ISO date');

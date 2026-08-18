@@ -199,7 +199,27 @@ async function assertPromptFileRefs(body: PromptSubmission, store: IFileService)
   }
 }
 
+async function acquirePromptSubmissionLock(
+  queues: Map<string, Promise<void>>,
+  key: string,
+): Promise<() => void> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.catch(() => undefined).then(() => current);
+  queues.set(key, tail);
+  await previous.catch(() => undefined);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    release();
+    if (queues.get(key) === tail) queues.delete(key);
+  };
+}
+
 export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
+  const submissionQueues = new Map<string, Promise<void>>();
   const listRoute = defineRoute(
     {
       method: 'GET',
@@ -245,12 +265,27 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       const { session_id } = req.params;
+      const lockKey = req.body.idempotency_key === undefined
+        ? undefined
+        : `${session_id}\0${req.body.agent_id ?? MAIN_AGENT_ID}\0${req.body.idempotency_key}`;
+      const releaseSubmission = lockKey === undefined
+        ? undefined
+        : await acquirePromptSubmissionLock(submissionQueues, lockKey);
       try {
+        const requestFingerprint = promptRequestFingerprint(req.body);
         // Fail fast on stale file references before anything is resolved or
         // mutated: a bad `file_id` must not create the agent, register `main`
         // in session metadata, or touch the session's controls.
         await assertPromptFileRefs(req.body, core.accessor.get(IFileService));
         const resolved = await resolvePrompt(core, session_id, req.body.agent_id);
+        if (req.body.idempotency_key !== undefined) {
+          const existing = resolved.prompt.find?.(req.body.idempotency_key);
+          if (existing !== undefined) {
+            assertIdempotentRetry(existing.message, req.body.content, requestFingerprint);
+            reply.send(okEnvelope(projectPromptSnapshot(existing), req.id));
+            return;
+          }
+        }
         await resolved.auth.ensureReady();
 
         // Media resolution runs BEFORE any control mutation, so a failed
@@ -313,15 +348,22 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           eventService: core.accessor.get(IEventService),
           sessionId: session_id,
         }, promptMetadataTextFromContentParts(parts));
-        const handle = await resolved.prompt.enqueue({ message: {
+        const handle = await resolved.prompt.enqueue({ id: req.body.idempotency_key, message: {
           role: 'user',
           content: parts,
           toolCalls: [],
-          origin: { kind: 'user' },
+          origin: {
+            kind: 'user',
+            ...(req.body.idempotency_key !== undefined
+              ? { idempotencyFingerprint: requestFingerprint }
+              : {}),
+          },
         } });
         reply.send(okEnvelope(projectPromptHandle(handle), req.id));
       } catch (error) {
         sendMappedError(reply, req, error);
+      } finally {
+        releaseSubmission?.();
       }
     },
   );
@@ -415,11 +457,20 @@ function projectPromptHandle(handle: PromptHandle) {
 function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][number]) {
   const status = prompt.state === 'running' || prompt.state === 'steered'
     ? 'running'
-    : prompt.state === 'blocked' ? 'blocked' : 'queued';
+    : prompt.state === 'blocked'
+      ? 'blocked'
+      : 'queued';
   return {
     prompt_id: prompt.id,
     user_message_id: prompt.userMessageId,
     status,
+    ...(
+      prompt.state === 'completed'
+      || prompt.state === 'failed'
+      || prompt.state === 'cancelled'
+        ? { terminal: true }
+        : {}
+    ),
     content: corePartsToProtocol(prompt.message.content),
     created_at: prompt.createdAt,
   };
@@ -462,6 +513,52 @@ function contentToCoreParts(content: PromptSubmission['content']): ContentPart[]
     else if (part.type === 'video' && part.source.kind === 'base64') parts.push({ type: 'video_url', videoUrl: { url: `data:${part.source.media_type};base64,${part.source.data}` } });
   }
   return parts;
+}
+
+function assertIdempotentRetry(
+  existing: PromptQueueSnapshot['pending'][number]['message'],
+  incoming: PromptSubmission['content'],
+  incomingFingerprint: string,
+): void {
+  const existingFingerprint = existing.origin?.kind === 'user'
+    ? existing.origin.idempotencyFingerprint
+    : undefined;
+  if (existingFingerprint !== undefined) {
+    if (existingFingerprint === incomingFingerprint) return;
+    throw new Error2(
+      ErrorCodes.REQUEST_INVALID,
+      'idempotency_key was already used for a different prompt request',
+    );
+  }
+  const existingText = existing
+    .content
+    .filter((part): part is Extract<ContentPart, { type: 'text' }> => part.type === 'text')
+    .map((part) => part.text);
+  const incomingText = incoming
+    .filter((part): part is Extract<PromptSubmission['content'][number], { type: 'text' }> => part.type === 'text')
+    .map((part) => part.text);
+  if (JSON.stringify(existingText.slice(0, incomingText.length)) !== JSON.stringify(incomingText)) {
+    throw new Error2(
+      ErrorCodes.REQUEST_INVALID,
+      'idempotency_key was already used for different prompt content',
+    );
+  }
+}
+
+function promptRequestFingerprint(body: PromptSubmission): string {
+  const { idempotency_key: _idempotencyKey, ...semanticRequest } = body;
+  return createHash('sha256').update(canonicalJson(semanticRequest)).digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(',')}}`;
 }
 
 interface ResolvePromptMediaOptions {

@@ -86,6 +86,7 @@ import {
   CHILD_SESSION_KIND,
   CHILD_SESSION_KIND_KEY,
   ISessionIndex,
+  ISessionIndexMirror,
   PARENT_SESSION_ID_KEY,
 } from '#/app/sessionIndex/sessionIndex';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -156,6 +157,7 @@ import {
 
 type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
   readonly sessionId: string;
+  readonly deferInitialMetadataMirror?: boolean;
 };
 
 export class SessionLifecycleService extends Disposable implements ISessionLifecycleService {
@@ -170,6 +172,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly _onDidForkSession = this._register(new Emitter<SessionForkedEvent>());
   readonly onDidForkSession: Event<SessionForkedEvent> = this._onDidForkSession.event;
   private readonly resuming = new Map<string, Promise<ISessionScopeHandle | undefined>>();
+  private readonly deleting = new Map<string, Promise<void>>();
   /**
    * Live per-session MCP overlays keyed by session id. The session handle's
    * dispose removes its overlay here before shutting it down, so whatever
@@ -186,6 +189,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IConfigService private readonly config: IConfigService,
     @IHostEnvironment private readonly hostEnv: IHostEnvironment,
     @ISessionIndex private readonly index: ISessionIndex,
+    @ISessionIndexMirror private readonly indexMirror: ISessionIndexMirror,
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
@@ -232,8 +236,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   async create(opts: CreateSessionOptions): Promise<ISessionScopeHandle> {
     const sessionId = opts.sessionId ?? createSessionId();
-    const handle = await this.materializeSession({ ...opts, sessionId });
+    let handle: ISessionScopeHandle | undefined;
+    let indexEntryAttempted = false;
     try {
+      handle = await this.materializeSession({
+        ...opts,
+        sessionId,
+        deferInitialMetadataMirror: true,
+      });
       const main =
         opts.mainAgentBinding === undefined
           ? undefined
@@ -245,17 +255,45 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         const planAgent = main ?? (await ensureMainAgent(handle));
         await planAgent.accessor.get(IAgentPlanService).enter();
       }
+      const metadata = handle.accessor.get(ISessionMetadata);
+      // Keep a newly materialized scope private while its binding and initial
+      // metadata are assembled. Register immediately before lifecycle hooks so
+      // hook consumers can resolve it, while the index mirror remains deferred.
+      this.sessions.set(sessionId, handle);
+      indexEntryAttempted = true;
       await this.appendSessionIndexEntry(sessionId, opts.workDir);
+      await this.announceCreated({ sessionId, handle, source: 'startup' });
+      await metadata.commitInitial?.();
+      return handle;
     } catch (error) {
-      const sessionDir = handle.accessor.get(ISessionContext).sessionDir;
+      const sessionDir = handle?.accessor.get(ISessionContext).sessionDir
+        ?? sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId);
       this.sessions.delete(sessionId);
-      await this.drainAgents(handle).catch(() => {});
-      handle.dispose();
+      if (handle !== undefined) {
+        await this.drainAgents(handle).catch(() => {});
+        handle.dispose();
+      }
       await this.hostFs.remove(sessionDir).catch(() => {});
+      // SessionMetadata mirrors its first summary during materialization, well
+      // before the legacy index append below. Always cancel/evict that summary,
+      // even when agent binding or initial metadata failed first.
+      await this.indexMirror.forget?.(sessionId).catch(() => {});
+      await this.index.remove(sessionId).catch(() => {});
+      if (indexEntryAttempted) {
+        // The index append may have reached disk even when its flush or a
+        // subsequent creation hook failed. Pair it with the same tombstone and
+        // read-model eviction used by delete so a failed create is never
+        // discoverable as an orphan session.
+        try {
+          this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });
+          await this.appendLogStore.flush();
+        } catch {
+          // The deleted session directory remains the authoritative absence;
+          // projection reconciliation will drop any stale derived entry.
+        }
+      }
       throw error;
     }
-    await this.announceCreated({ sessionId, handle, source: 'startup' });
-    return handle;
   }
 
   private async materializeSession(opts: MaterializeSessionOptions): Promise<ISessionScopeHandle> {
@@ -272,6 +310,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       sessionDir,
       metaScope,
       cwd: opts.workDir,
+      ...(opts.deferInitialMetadataMirror === true
+        ? {
+            metadataBootstrap: {
+              ...(opts.title !== undefined ? { title: opts.title } : {}),
+              custom: { ...opts.metadata },
+              deferMirror: true,
+            },
+          }
+        : {}),
       scope: (subKey?: string): string =>
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
@@ -340,7 +387,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       void this.explicitAgentProfileLoader.reload().catch(() => undefined);
       throw error;
     }
-    this.sessions.set(opts.sessionId, handle);
+    if (opts.deferInitialMetadataMirror !== true) {
+      this.sessions.set(opts.sessionId, handle);
+    }
     return handle;
   }
 
@@ -370,6 +419,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   resume(sessionId: string, opts?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined> {
+    if (this.deleting.has(sessionId)) return Promise.resolve(undefined);
     const inflight = this.resuming.get(sessionId);
     if (inflight !== undefined) return inflight;
     const live = this.sessions.get(sessionId);
@@ -457,7 +507,18 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return handle;
   }
 
-  async delete(sessionId: string): Promise<void> {
+  delete(sessionId: string): Promise<void> {
+    const existing = this.deleting.get(sessionId);
+    if (existing !== undefined) return existing;
+    let operation!: Promise<void>;
+    operation = this.deleteOnce(sessionId).finally(() => {
+      if (this.deleting.get(sessionId) === operation) this.deleting.delete(sessionId);
+    });
+    this.deleting.set(sessionId, operation);
+    return operation;
+  }
+
+  private async deleteOnce(sessionId: string): Promise<void> {
     const inflight = this.resuming.get(sessionId);
     if (inflight !== undefined) {
       await inflight.catch(() => undefined);
@@ -472,6 +533,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await this.close(sessionId);
     }
     await this.hostFs.remove(sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId));
+    await this.indexMirror.forget?.(sessionId);
     await this.index.remove(sessionId);
     this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });
     await this.appendLogStore.flush();

@@ -34,6 +34,9 @@ export interface CreateSessionOptions {
   readonly workDir: string;
   readonly additionalDirs?: readonly string[];
   readonly mainAgentBinding?: BindAgentInput;
+  /** Initial metadata committed before the session is indexed or announced. */
+  readonly title?: string;
+  readonly metadata?: Record<string, unknown>;
   /**
    * Ephemeral per-session MCP servers: connected only for this session,
    * visible only to this session (an entry shadows a workspace server of the

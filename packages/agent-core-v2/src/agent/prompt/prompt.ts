@@ -50,6 +50,8 @@ export interface PromptQueueSnapshot {
 export interface IAgentPromptService {
   readonly _serviceBrand: undefined;
   enqueue(input: PromptInput): Promise<PromptHandle>;
+  /** Find an accepted prompt by its stable client id, including persisted history. */
+  find?(promptId: string): PromptSnapshot | undefined;
   list(): PromptQueueSnapshot;
   steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]>;
   abort(promptId: string, reason?: Error): boolean;

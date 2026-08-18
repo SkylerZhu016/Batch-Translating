@@ -38,6 +38,7 @@ export const STORAGE_KEYS = {
   inputHistory: 'kimi-web.input-history',
   // cross-file
   locale: 'kimi-locale',
+  localeConfirmed: 'kimi-locale.confirmed',
   clientId: 'kimi-web.client-id',
   debug: 'kimi-web.debug',
   openInLastTarget: 'kimi-web.open-in.last-target',

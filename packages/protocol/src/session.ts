@@ -119,6 +119,8 @@ export const sessionCreateSchema = z.object({
   title: z.string().min(1).optional(),
   metadata: sessionMetadataSchema.optional(),
   agent_config: sessionAgentConfigPartialSchema.optional(),
+  /** Bind the main agent before the session is exposed or accepts a prompt. */
+  agent_profile: z.string().trim().min(1).optional(),
   workspace_id: workspaceIdSchema.optional(),
 });
 

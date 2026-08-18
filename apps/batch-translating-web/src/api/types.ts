@@ -209,6 +209,8 @@ export type ThinkingLevel = 'off' | 'on' | (string & {});
 export interface PromptSubmission {
   content: AppMessageContent[];
   metadata?: Record<string, unknown>;
+  /** Stable across retries; the daemon returns the first accepted prompt. */
+  idempotencyKey?: string;
   /** Optional non-main agent id, used by BTW side-channel prompts. */
   agentId?: string;
   /** Profile selected for the agent's first bind. */
@@ -232,7 +234,9 @@ export interface PromptSubmitResult {
   userMessageId: string;
   /** 'running' when the prompt started a turn immediately; 'queued' when
       another prompt is active and the daemon parked it (steerable). */
-  status?: 'running' | 'queued';
+  status?: 'running' | 'queued' | 'blocked';
+  /** Accepted earlier and no longer active/queued. */
+  terminal?: boolean;
 }
 
 // ---------------------------------------------------------------------------

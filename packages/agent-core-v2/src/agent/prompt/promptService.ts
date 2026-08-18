@@ -68,6 +68,13 @@ export const promptLaunchingKey = defineState<boolean>('prompt.launching', () =>
 export class AgentPromptService implements IAgentPromptService {
   declare readonly _serviceBrand: undefined;
   private active: (Record & { turn: Turn }) | undefined;
+  /**
+   * `startNext` removes a record from `pending` before its turn has been
+   * assigned. Keep that record discoverable throughout the asynchronous hook
+   * and loop-enqueue window so a concurrent retry with the same client id
+   * cannot materialize a second paid prompt.
+   */
+  private launchingRecord: Record | undefined;
   private readonly pending: Record[] = [];
   private readonly steered = new Map<string, Record[]>();
   private fullCompactionService: IAgentFullCompactionService | undefined;
@@ -99,6 +106,18 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   async enqueue(input: PromptInput): Promise<PromptHandle> {
+    if (input.id !== undefined) {
+      const live = this.findLiveRecord(input.id);
+      if (live !== undefined) {
+        assertIdempotentPromptMatches(live.message, input.message);
+        return live.handle;
+      }
+      const delivered = this.findDeliveredPrompt(input.id);
+      if (delivered !== undefined) {
+        assertIdempotentPromptMatches(delivered.message, input.message);
+        return terminalHandle(delivered);
+      }
+    }
     const id = input.id ?? input.message.id ?? newMessageId();
     const message = { ...input.message, id };
     const launchedDeferred = deferred<Turn | undefined>();
@@ -126,6 +145,11 @@ export class AgentPromptService implements IAgentPromptService {
       this.publishQueued(record);
     }
     return record.handle;
+  }
+
+  find(promptId: string): PromptSnapshot | undefined {
+    const live = this.findLiveRecord(promptId);
+    return live === undefined ? this.findDeliveredPrompt(promptId) : snapshot(live);
   }
 
   list(): PromptQueueSnapshot {
@@ -183,15 +207,44 @@ export class AgentPromptService implements IAgentPromptService {
     this.context.clear();
   }
 
+  private findLiveRecord(promptId: string): Record | undefined {
+    if (this.active?.id === promptId) return this.active;
+    if (this.launchingRecord?.id === promptId) return this.launchingRecord;
+    const pending = this.pending.find((item) => item.id === promptId);
+    if (pending !== undefined) return pending;
+    for (const records of this.steered.values()) {
+      const steered = records.find((item) => item.id === promptId);
+      if (steered !== undefined) return steered;
+    }
+    return undefined;
+  }
+
+  private findDeliveredPrompt(promptId: string): PromptSnapshot | undefined {
+    const message = this.context.get().find(
+      (candidate) => candidate.id === promptId && candidate.role === 'user',
+    );
+    if (message === undefined) return undefined;
+    return {
+      id: promptId,
+      userMessageId: promptId,
+      createdAt: new Date().toISOString(),
+      state: message.origin?.kind === 'user' && message.origin.promptReceiptState === 'blocked'
+        ? 'blocked'
+        : 'completed',
+      message,
+    };
+  }
+
   private async startNext(): Promise<void> {
     if (this.active !== undefined || this.launching) return;
     const item = this.pending.shift(); if (item === undefined) return;
     this.launching = true;
+    this.launchingRecord = item;
     try {
       if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') { this.pending.unshift(item); return; }
       const { message, captions } = this.extractCompressionCaptions(item.message);
       if (await this.blockedByHook(message, false)) {
-        this.appendPrompt(message, captions); item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
+        this.appendPrompt(withBlockedReceipt(message), captions); item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
         item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
         this.publishCompleted(item.id, 'blocked'); return;
       }
@@ -205,6 +258,7 @@ export class AgentPromptService implements IAgentPromptService {
       item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'failed' });
       this.publishCompleted(item.id, 'failed');
     } finally {
+      if (this.launchingRecord === item) this.launchingRecord = undefined;
       this.launching = false;
       if (this.active === undefined) void this.startNext();
     }
@@ -266,6 +320,51 @@ export class AgentPromptService implements IAgentPromptService {
 }
 
 function snapshot(item: Record): PromptSnapshot { return { id: item.id, userMessageId: item.userMessageId, createdAt: item.createdAt, state: item.state, message: item.message }; }
+function terminalHandle(item: PromptSnapshot): PromptHandle {
+  const state = item.state === 'blocked'
+    || item.state === 'failed'
+    || item.state === 'cancelled'
+    ? item.state
+    : 'completed';
+  return {
+    ...item,
+    state,
+    launched: Promise.resolve(undefined),
+    completion: Promise.resolve({ promptId: item.id, result: undefined, state }),
+  };
+}
+function assertIdempotentPromptMatches(
+  existing: ContextMessage,
+  incoming: ContextMessage,
+): void {
+  const existingFingerprint = existing.origin?.kind === 'user'
+    ? existing.origin.idempotencyFingerprint
+    : undefined;
+  const incomingFingerprint = incoming.origin?.kind === 'user'
+    ? incoming.origin.idempotencyFingerprint
+    : undefined;
+  if (
+    existing.role !== incoming.role
+    || (
+      existingFingerprint !== undefined
+      && incomingFingerprint !== undefined
+      && existingFingerprint !== incomingFingerprint
+    )
+    || JSON.stringify(existing.content) !== JSON.stringify(incoming.content)
+  ) {
+    throw new Error2(
+      ErrorCodes.REQUEST_INVALID,
+      'idempotency key was already used for different prompt content',
+    );
+  }
+}
+function withBlockedReceipt(message: ContextMessage): ContextMessage {
+  if (message.origin?.kind !== 'user') return message;
+  return {
+    ...message,
+    origin: { ...message.origin, promptReceiptState: 'blocked' },
+  };
+}
 function deferred<T>(): Deferred<T> { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; }
 
 registerScopedService(

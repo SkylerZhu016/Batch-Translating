@@ -21,6 +21,12 @@ export interface ISessionContext {
   readonly sessionDir: string;
   readonly metaScope: string;
   readonly cwd: string;
+  /** Initial metadata kept out of the index until session creation commits. */
+  readonly metadataBootstrap?: {
+    readonly title?: string;
+    readonly custom: Readonly<Record<string, unknown>>;
+    readonly deferMirror: boolean;
+  };
   scope(subKey?: string): string;
 }
 
@@ -38,6 +44,7 @@ export function makeSessionContext(input: {
   readonly sessionScope: string;
   readonly cwd: string;
   readonly metaScope?: string;
+  readonly metadataBootstrap?: ISessionContext['metadataBootstrap'];
 }): ISessionContext {
   const { sessionScope } = input;
   return {
@@ -47,6 +54,9 @@ export function makeSessionContext(input: {
     sessionDir: input.sessionDir,
     metaScope: input.metaScope ?? sessionScope,
     cwd: input.cwd,
+    ...(input.metadataBootstrap !== undefined
+      ? { metadataBootstrap: input.metadataBootstrap }
+      : {}),
     scope: (subKey?: string): string =>
       subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
   };

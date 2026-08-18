@@ -6,6 +6,10 @@ export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
 
 export interface UserPromptOrigin {
   readonly kind: 'user';
+  /** Canonical hash of the client request guarded by an idempotency key. */
+  readonly idempotencyFingerprint?: string;
+  /** Terminal refusal retained so an ambiguous retry cannot become accepted. */
+  readonly promptReceiptState?: 'blocked';
 }
 
 export const USER_PROMPT_ORIGIN: UserPromptOrigin = { kind: 'user' };

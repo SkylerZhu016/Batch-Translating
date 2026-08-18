@@ -34,8 +34,10 @@
  * `ISessionLegacyService` (the `agent_config` patch, the status rollup, and the
  * current-goal read hold real cross-domain adaptation);
  * the route forwards each adapter result verbatim, mirroring v1's thin handler.
- * `create`, `fork`, and child creation publish `event.session.created` on the
- * core event bus, matching v1.
+ * `create` binds the requested main-agent profile/model and commits initial
+ * title/custom metadata before indexing or publishing `event.session.created`;
+ * `fork` and child creation retain inherited bindings. All three publish the
+ * created event, matching v1.
  *
  * `GET /sessions/{id}/warnings` surfaces session-level notices in the v1
  * `{ code, message, severity }` wire shape: the `agents-md-oversized` warning
@@ -327,12 +329,23 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         const handler = await core.accessor.get(IWorkspaceLifecycleService).handlerFor({
           root: workDir,
         });
-        const handle = await handler.accessor.get(ISessionLifecycleService).create({
+        const requestedProfile = body.agent_profile?.trim();
+        const requestedModel = body.agent_config?.model?.trim();
+        const shouldBindMainAgent = requestedProfile !== undefined || requestedModel !== undefined;
+        const mainAgentBinding = shouldBindMainAgent
+          ? {
+              profile: requestedProfile ?? 'agent',
+              ...(requestedModel ? { model: requestedModel } : {}),
+            }
+          : undefined;
+        const { cwd: _reservedCwd, ...initialMetadata } = body.metadata ?? {};
+        const lifecycle = handler.accessor.get(ISessionLifecycleService);
+        const handle = await lifecycle.create({
           workDir,
+          ...(mainAgentBinding !== undefined ? { mainAgentBinding } : {}),
+          ...(body.title !== undefined ? { title: body.title } : {}),
+          ...(body.metadata !== undefined ? { metadata: initialMetadata } : {}),
         });
-        if (typeof body.title === 'string') {
-          await handle.accessor.get(ISessionMetadata).setTitle(body.title);
-        }
         const meta = await handle.accessor.get(ISessionMetadata).read();
         const session = toWireSession(
           { ...meta, workspaceId: touched.id },

@@ -641,6 +641,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
         promptId: data.prompt_id,
         userMessageId: data.user_message_id,
         status: data.status,
+        terminal: data.terminal,
       };
     } catch (error) {
       traceKeyEvent('prompt:failed', {

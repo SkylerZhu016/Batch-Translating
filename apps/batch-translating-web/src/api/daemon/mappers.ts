@@ -254,6 +254,7 @@ export function toWirePromptSubmission(input: PromptSubmission): WirePromptSubmi
   return {
     content: input.content.map(toWireMessageContent),
     metadata: input.metadata,
+    idempotency_key: input.idempotencyKey,
     agent_id: input.agentId,
     profile: input.profile,
     disabled_tools: input.disabledTools,
@@ -560,7 +561,9 @@ export function toAppEvent(wire: WireEvent): AppEvent {
       return {
         type: 'goalUpdated',
         sessionId: w.session_id,
-        goal: goal?.status === 'complete' ? null : goal,
+        // Keep the completion snapshot in the event. UI state clears the goal
+        // card in the reducer, while domain listeners can persist completion.
+        goal,
       };
     }
 
