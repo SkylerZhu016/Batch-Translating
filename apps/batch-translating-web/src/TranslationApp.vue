@@ -352,7 +352,6 @@ function capabilityProbeFromRagStatus(
     && Boolean(status.fingerprint?.trim());
   const retrievalReady = bgeReady
     && status.serviceStatus === 'ready'
-    && status.indexReady === true
     && status.degraded !== true;
   return {
     bgeM3: {

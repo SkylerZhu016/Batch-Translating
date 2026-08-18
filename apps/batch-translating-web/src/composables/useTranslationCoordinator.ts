@@ -215,6 +215,7 @@ function qualityProbeFromRuntime(
 ): { bgeM3?: BgeM3CapabilityProbe; rag?: RagCapabilityProbe } {
   if (runtime === undefined) return {};
   const available = runtime.status === 'available' && runtime.degraded !== true;
+  const serviceReady = available && runtime.serviceReachable === true;
   return {
     bgeM3: {
       status: available ? 'ready' : runtime.status === 'failed' ? 'unhealthy' : 'missing',
@@ -224,11 +225,12 @@ function qualityProbeFromRuntime(
       denseAvailable: available && runtime.denseReady === true,
     },
     rag: {
-      status: available && runtime.indexReady === true ? 'ready' : 'unhealthy',
-      serviceReachable: available && runtime.serviceReachable === true,
-      denseRetrievalAvailable: available
-        && runtime.denseReady === true
-        && runtime.indexReady === true,
+      // A new project has no per-project index yet. Service + dense capability
+      // is enough to select the RAG workflow; the Coordinator builds the index
+      // from the verified source/ledger immediately after initialization.
+      status: serviceReady ? 'ready' : 'unhealthy',
+      serviceReachable: serviceReady,
+      denseRetrievalAvailable: serviceReady && runtime.denseReady === true,
       ...(runtime.indexVersion ? { indexVersion: runtime.indexVersion } : {}),
     },
   };
