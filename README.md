@@ -19,7 +19,7 @@ Batch Translating 是一个面向长篇 EPUB/TXT 文学翻译的 Windows 桌面�
 
 ## 开发
 
-要求：Node.js 24.15.0 或更高版本、pnpm 10.33.0、Rust stable（构建桌面端时需要）。
+要求：Node.js **必须为 24.15.0**、pnpm 10.33.0、Rust stable（构建桌面端时需要）。当前较新的 Node 24 版本在 Windows 上存在已确认的 libuv `fs.watch` 原生崩溃；仓库、CI 与 SEA 构建会统一拒绝错误版本。
 
 ```sh
 corepack pnpm install --frozen-lockfile

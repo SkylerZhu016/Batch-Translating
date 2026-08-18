@@ -23,10 +23,10 @@ if (!['local', 'release'].includes(profile)) {
 }
 
 function ensureNodeVersion() {
-  const [major, minor] = process.versions.node.split('.').map(Number);
-  if (major < 24 || (major === 24 && minor < 15)) {
+  if (process.versions.node !== '24.15.0') {
     console.error(
-      `Kimi Code native SEA build requires Node.js >=24.15.0, current ${process.versions.node}.`,
+      `Batch Translating native SEA build requires Node.js 24.15.0 exactly; current ${process.versions.node}. ` +
+        'Newer Node 24 releases currently trigger a confirmed Windows libuv fs.watch crash.',
     );
     process.exit(1);
   }
