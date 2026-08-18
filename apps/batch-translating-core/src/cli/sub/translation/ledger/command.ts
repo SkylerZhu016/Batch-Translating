@@ -33,7 +33,7 @@ export function registerTranslationLedgerCommand(
         '源登记 / Source registration:',
         '  source register-item|register-paragraph --input <json|->',
         '任务 / Tasks:',
-        '  task ensure|claim|start|complete|fail --input <json|->',
+        '  task ensure|claim|start|renew|complete|fail --input <json|->',
         '  task list|recover --project <id>; task retry --task <id>',
         '指令 / Instructions:',
         '  instruction analyze|apply --input <json|->',

@@ -83,7 +83,7 @@ function help(): Record<string, unknown> {
     commands: [
       'project init|open|status|summary|report-data|integrity|completion',
       'source register-item|register-paragraph',
-      'task ensure|list|claim|start|complete|fail|retry|recover',
+      'task ensure|list|claim|start|renew|complete|fail|retry|recover',
       'instruction analyze|apply|list',
       'cost record|record-usage',
       'budget status|update',
@@ -106,6 +106,9 @@ function help(): Record<string, unknown> {
         optional: ['taskTypes'],
       },
       'task start': { required: ['taskId', 'attemptId', 'workerId'] },
+      'task renew': {
+        required: ['taskId', 'attemptId', 'workerId', 'leaseDurationMs'],
+      },
       'task complete': {
         required: ['projectId', 'taskId', 'attemptId', 'workerId', 'sourceHashes', 'payload', 'provenance'],
         provenanceRequired: ['providerId', 'modelId', 'promptVersion', 'instructionVersion', 'contextHash', 'sourceHashes'],
@@ -235,6 +238,22 @@ export async function runTranslationDomainCli(
       const payload = readPayload<{ taskId: string; attemptId: string; workerId: string }>(args);
       assertNoArgs(args);
       data = ledger.markAttemptRunning(payload.taskId, payload.attemptId, payload.workerId);
+    } else if (group === 'task' && command === 'renew') {
+      const payload = readPayload<{
+        taskId: string;
+        attemptId: string;
+        workerId: string;
+        leaseDurationMs: number;
+      }>(args);
+      assertNoArgs(args);
+      data = {
+        leaseExpiresAt: ledger.renewTaskLease(
+          payload.taskId,
+          payload.attemptId,
+          payload.workerId,
+          payload.leaseDurationMs,
+        ),
+      };
     } else if (group === 'task' && command === 'complete') {
       const payload = readPayload<CompleteAttemptInput>(args);
       assertNoArgs(args);

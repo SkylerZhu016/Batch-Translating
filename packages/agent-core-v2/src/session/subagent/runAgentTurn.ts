@@ -19,6 +19,7 @@ import { type TokenUsage } from '#/kosong/contract/usage';
 import { linkAbortSignal, userCancellationReason } from '#/_base/utils/abort';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { newMessageId } from '#/agent/contextMemory/messageId';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { Error2, ErrorCodes, toKimiErrorPayload, type KimiErrorPayload } from '#/errors';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -51,13 +52,8 @@ export async function runAgentTurn(
   const promptService = target.accessor.get(IAgentPromptService);
   const turn =
     request.kind === 'prompt'
-      ? await (await promptService.enqueue({ message: {
-          role: 'user',
-          content: [{ type: 'text', text: request.prompt }],
-          toolCalls: [],
-          origin: AGENT_RUN_PROMPT_ORIGIN,
-        } })).launched
-      : await promptService.retry();
+      ? await enqueuePromptTurn(promptService, request.prompt, options.signal)
+      : await promptService.retry(options.signal);
   if (turn === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Agent turn could not be started');
 
   if (options.onReady !== undefined) {
@@ -66,6 +62,43 @@ export async function runAgentTurn(
 
   const completion = awaitRun(target, turn, options);
   return { agentId: target.id, turn, completion };
+}
+
+async function enqueuePromptTurn(
+  promptService: IAgentPromptService,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<Turn | undefined> {
+  signal.throwIfAborted();
+  const promptId = newMessageId();
+  const abortPrompt = (): void => {
+    const reason = signal.reason instanceof Error ? signal.reason : userCancellationReason();
+    try {
+      promptService.abort(promptId, reason);
+    } catch {
+      // The abort may race the synchronous record creation or terminal settlement.
+    }
+  };
+  signal.addEventListener('abort', abortPrompt, { once: true });
+  try {
+    const handlePromise = promptService.enqueue({
+      id: promptId,
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: prompt }],
+        toolCalls: [],
+        origin: AGENT_RUN_PROMPT_ORIGIN,
+      },
+    });
+    if (signal.aborted) abortPrompt();
+    const handle = await handlePromise;
+    signal.throwIfAborted();
+    const turn = await handle.launched;
+    signal.throwIfAborted();
+    return turn;
+  } finally {
+    signal.removeEventListener('abort', abortPrompt);
+  }
 }
 
 async function awaitRun(
@@ -137,12 +170,11 @@ async function distillSummary(
 
   const promptService = target.accessor.get(IAgentPromptService);
   for (let attempt = 0; attempt < policy.retries; attempt++) {
-    const turn = await (await promptService.enqueue({ message: {
-      role: 'user',
-      content: [{ type: 'text', text: policy.continuationPrompt }],
-      toolCalls: [],
-      origin: AGENT_RUN_PROMPT_ORIGIN,
-    } })).launched;
+    const turn = await enqueuePromptTurn(
+      promptService,
+      policy.continuationPrompt,
+      controller.signal,
+    );
     if (turn === undefined) break;
     setTurn(turn);
     const result = await awaitTurn(turn, controller, cancelTurn);

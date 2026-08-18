@@ -21,7 +21,12 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
-import { IAgentLoopService, type Turn, type TurnResult } from '#/agent/loop/loop';
+import {
+  IAgentLoopService,
+  type EnqueueReceipt,
+  type Turn,
+  type TurnResult,
+} from '#/agent/loop/loop';
 import { steerTurn } from '#/agent/loop/turnOps';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
@@ -58,6 +63,8 @@ declare module '#/app/event/eventBus' {
 interface Deferred<T> { readonly promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 interface Record extends PromptSnapshot {
   state: PromptState;
+  launchAbortReason?: Error;
+  launchReceipt?: EnqueueReceipt;
   readonly launchedDeferred: Deferred<Turn | undefined>;
   readonly completionDeferred: Deferred<PromptCompletion>;
   handle: PromptHandle;
@@ -182,6 +189,14 @@ export class AgentPromptService implements IAgentPromptService {
 
   abort(promptId: string, reason: Error = userCancellationReason()): boolean {
     if (this.active?.id === promptId) { this.loop.cancel(this.active.turn.id, reason); return true; }
+    if (this.launchingRecord?.id === promptId) {
+      const item = this.launchingRecord;
+      if (item.state === 'cancelled') return true;
+      item.launchAbortReason = reason;
+      if (item.launchReceipt !== undefined && !item.launchReceipt.abort(reason)) return true;
+      this.cancelLaunchingRecord(item);
+      return true;
+    }
     const index = this.pending.findIndex((item) => item.id === promptId);
     if (index < 0) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} not found`);
     const [item] = this.pending.splice(index, 1) as [Record];
@@ -199,10 +214,22 @@ export class AgentPromptService implements IAgentPromptService {
     return (await this.loop.enqueue(request).assigned).turn;
   }
 
-  async retry(): Promise<Turn | undefined> { return (await this.loop.enqueue(new RetryStepRequest()).assigned).turn; }
+  async retry(signal?: AbortSignal): Promise<Turn | undefined> {
+    signal?.throwIfAborted();
+    const receipt = this.loop.enqueue(new RetryStepRequest());
+    const abortRetry = (): void => { receipt.abort(signal?.reason); };
+    signal?.addEventListener('abort', abortRetry, { once: true });
+    try {
+      if (signal?.aborted === true) abortRetry();
+      return (await receipt.assigned).turn;
+    } finally {
+      signal?.removeEventListener('abort', abortRetry);
+    }
+  }
 
   clear(): void {
     for (const item of this.pending.slice()) this.abort(item.id);
+    if (this.launchingRecord !== undefined) this.abort(this.launchingRecord.id);
     if (this.active !== undefined) this.abort(this.active.id);
     this.context.clear();
   }
@@ -243,21 +270,39 @@ export class AgentPromptService implements IAgentPromptService {
     try {
       if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') { this.pending.unshift(item); return; }
       const { message, captions } = this.extractCompressionCaptions(item.message);
-      if (await this.blockedByHook(message, false)) {
+      const hookResult = await Promise.race([
+        this.blockedByHook(message, false).then((blocked) => ({ kind: 'completed' as const, blocked })),
+        item.completionDeferred.promise.then(() => ({ kind: 'cancelled' as const })),
+      ]);
+      if (hookResult.kind === 'cancelled' || item.state === 'cancelled') return;
+      if (hookResult.blocked) {
         this.appendPrompt(withBlockedReceipt(message), captions); item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
         item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
         this.publishCompleted(item.id, 'blocked'); return;
       }
-      const turn = (await this.loop.enqueue(new PromptStepRequest(message, captions, this.reminders)).assigned).turn;
+      item.launchReceipt = this.loop.enqueue(new PromptStepRequest(message, captions, this.reminders));
+      const turn = (await item.launchReceipt.assigned).turn;
       if (turn === undefined) { this.pending.unshift(item); return; }
+      if (item.launchAbortReason !== undefined) {
+        if (turn.cancel(item.launchAbortReason)) {
+          this.cancelLaunchingRecord(item);
+        } else {
+          item.state = 'running'; item.launchedDeferred.resolve(turn); this.active = Object.assign(item, { turn });
+          void turn.result.then((result) => this.settle(item, result));
+        }
+        return;
+      }
       item.state = 'running'; item.launchedDeferred.resolve(turn); this.active = Object.assign(item, { turn });
       void turn.result.then((result) => this.settle(item, result));
     } catch {
+      if (item.state === 'cancelled') return;
       item.state = 'failed';
       item.launchedDeferred.resolve(undefined);
       item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'failed' });
       this.publishCompleted(item.id, 'failed');
     } finally {
+      item.launchAbortReason = undefined;
+      item.launchReceipt = undefined;
       if (this.launchingRecord === item) this.launchingRecord = undefined;
       this.launching = false;
       if (this.active === undefined) void this.startNext();
@@ -277,6 +322,13 @@ export class AgentPromptService implements IAgentPromptService {
 
   private async blockedByHook(promptMessage: ContextMessage, isSteer: boolean): Promise<boolean> {
     const ctx = { promptMessage, isSteer, block: false }; await this.hooks.onBeforeSubmitPrompt.run(ctx); return ctx.block;
+  }
+  private cancelLaunchingRecord(item: Record): void {
+    if (item.state === 'cancelled') return;
+    item.state = 'cancelled';
+    item.launchedDeferred.resolve(undefined);
+    item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'cancelled' });
+    this.publishAborted(item.id);
   }
   private get fullCompaction(): IAgentFullCompactionService {
     if (this.fullCompactionService === undefined) {

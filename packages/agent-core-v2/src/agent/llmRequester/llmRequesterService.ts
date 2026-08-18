@@ -49,6 +49,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import {
   APIRequestTooLargeError,
   APIStatusError,
+  APITimeoutError,
   classifyApiError,
   isImageFormatError,
   isRecoverableRequestStructureError,
@@ -105,6 +106,28 @@ const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
 };
 
 const noopOnPart: AgentLLMRequestPartHandler = () => {};
+
+const TRANSLATION_PROFILE_NAMES = new Set([
+  'translation-coordinator',
+  'memory-extractor',
+  'memory-consolidator',
+  'translator',
+  'reviewer-fidelity',
+  'reviewer-naturalness',
+  'reviewer-continuity',
+  'repairer',
+  'conflict-arbitrator',
+  'consistency-auditor',
+]);
+const TRANSLATION_FIRST_PART_TIMEOUT_ENV = 'BATCH_TRANSLATING_LLM_FIRST_PART_TIMEOUT_MS';
+const TRANSLATION_STREAM_IDLE_TIMEOUT_ENV = 'BATCH_TRANSLATING_LLM_STREAM_IDLE_TIMEOUT_MS';
+const DEFAULT_TRANSLATION_FIRST_PART_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_TRANSLATION_STREAM_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+
+interface TranslationRequestWatchdog {
+  readonly firstPartTimeoutMs: number;
+  readonly streamIdleTimeoutMs: number;
+}
 
 interface ResolvedLLMRequest {
   readonly requester: ModelRequester;
@@ -391,28 +414,69 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         onRequestTrace(normalized);
       };
 
-      for await (const event of request.requester.request(input, signal, {
+      const watchdog = resolveTranslationRequestWatchdog(this.profile.data().profileName);
+      const watchdogController = watchdog === undefined ? undefined : new AbortController();
+      const requestSignal = watchdogController === undefined
+        ? signal
+        : signal === undefined
+          ? watchdogController.signal
+          : AbortSignal.any([signal, watchdogController.signal]);
+      const events = request.requester.request(input, requestSignal, {
         ...request.params,
         onTraceId: setTraceId,
-      })) {
-        switch (event.type) {
-          case 'part':
-            await onPart(event.part);
-            break;
-          case 'usage':
-            usage = event.usage;
-            break;
-          case 'finish':
-            finish = event;
-            message = event.message;
-            setTraceId(event.traceId);
-            break;
-          case 'timing': {
-            const { type: _type, ...streamTiming } = event;
-            timing = streamTiming;
+      })[Symbol.asyncIterator]();
+      let streamDone = false;
+      let receivedPart = false;
+      let progressDeadline = watchdog === undefined
+        ? undefined
+        : Date.now() + watchdog.firstPartTimeoutMs;
+      try {
+        for (;;) {
+          const next = progressDeadline === undefined || watchdogController === undefined
+            ? await events.next()
+            : await nextModelRequestEvent(
+                events,
+                progressDeadline,
+                watchdogController,
+                receivedPart ? 'stream progress' : 'first streamed response',
+              );
+          if (next.done === true) {
+            streamDone = true;
             break;
           }
+          const event = next.value;
+          switch (event.type) {
+            case 'part':
+              receivedPart = true;
+              await onPart(event.part);
+              progressDeadline = watchdog === undefined
+                ? undefined
+                : Date.now() + watchdog.streamIdleTimeoutMs;
+              break;
+            case 'usage':
+              usage = event.usage;
+              break;
+            case 'finish':
+              finish = event;
+              message = event.message;
+              setTraceId(event.traceId);
+              break;
+            case 'timing': {
+              const { type: _type, ...streamTiming } = event;
+              timing = streamTiming;
+              break;
+            }
+          }
         }
+      } catch (error) {
+        signal?.throwIfAborted();
+        const timeoutReason = watchdogController?.signal.reason;
+        if (timeoutReason instanceof APITimeoutError) {
+          throw timeoutReason;
+        }
+        throw error;
+      } finally {
+        if (!streamDone) closeModelRequestIterator(events);
       }
 
       if (message === undefined || finish === undefined) {
@@ -837,6 +901,63 @@ function apiTraceId(error: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function resolveTranslationRequestWatchdog(
+  profileName: string | undefined,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): TranslationRequestWatchdog | undefined {
+  if (profileName === undefined || !TRANSLATION_PROFILE_NAMES.has(profileName)) return undefined;
+  return {
+    firstPartTimeoutMs: positiveTimeoutFromEnv(
+      env[TRANSLATION_FIRST_PART_TIMEOUT_ENV],
+      DEFAULT_TRANSLATION_FIRST_PART_TIMEOUT_MS,
+    ),
+    streamIdleTimeoutMs: positiveTimeoutFromEnv(
+      env[TRANSLATION_STREAM_IDLE_TIMEOUT_ENV],
+      DEFAULT_TRANSLATION_STREAM_IDLE_TIMEOUT_MS,
+    ),
+  };
+}
+
+function positiveTimeoutFromEnv(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function nextModelRequestEvent(
+  events: AsyncIterator<ModelRequestEvent>,
+  deadline: number,
+  controller: AbortController,
+  phase: 'first streamed response' | 'stream progress',
+): Promise<IteratorResult<ModelRequestEvent>> {
+  const remainingMs = Math.max(1, deadline - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timer = undefined;
+      const error = new APITimeoutError(
+        `Translation model request timed out waiting for ${phase} after ${String(remainingMs)}ms.`,
+      );
+      controller.abort(error);
+      reject(error);
+    }, remainingMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([events.next(), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function closeModelRequestIterator(events: AsyncIterator<ModelRequestEvent>): void {
+  try {
+    void events.return?.().catch(() => undefined);
+  } catch {
+    // The request result is already settled. Iterator cleanup is best-effort.
+  }
 }
 
 registerScopedService(
