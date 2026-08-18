@@ -9,7 +9,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { createServerLogger, startServer, type ServerLogger } from '@moonshot-ai/kap-server';
 import { shutdownTelemetry, track } from '@moonshot-ai/kimi-telemetry';
@@ -48,6 +48,30 @@ import {
 } from './shared';
 
 const WEB_ASSETS_DIR = 'dist-web';
+const PRODUCT_CLI_ENV = 'BATCH_TRANSLATING_CLI';
+const NATIVE_PRODUCT_EXECUTABLES = new Set([
+  'batch-translating-engine',
+  'batch-translating-engine.exe',
+]);
+
+/**
+ * Keep the packaged CLI reachable from every Agent Bash process. The desktop
+ * launcher supplies a canonical path, while a directly launched native SEA
+ * can safely identify itself from process.execPath. Development under node
+ * intentionally has no fallback, so it keeps using the normal PATH command.
+ */
+export function ensureProductCliEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+  executablePath: string = process.execPath,
+): void {
+  const configured = env[PRODUCT_CLI_ENV]?.trim();
+  if (configured) {
+    env[PRODUCT_CLI_ENV] = configured;
+    return;
+  }
+  if (!NATIVE_PRODUCT_EXECUTABLES.has(basename(executablePath).toLowerCase())) return;
+  env[PRODUCT_CLI_ENV] = executablePath;
+}
 
 /**
  * Minimal surface `runServerInProcess` needs from the server. kap-server's
@@ -237,6 +261,7 @@ async function runServerInProcess(
   options: ParsedServerOptions,
   onReady?: (origin: string) => void,
 ): Promise<never> {
+  ensureProductCliEnvironment();
   const version = getVersion();
   // Registers the telemetry provider for `track` / `shutdownTelemetry`; the
   // client itself is not passed into kap-server.
