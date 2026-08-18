@@ -1,6 +1,6 @@
 [package]
 name = "batch-translating-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Native desktop shell for Batch Translating"
 edition = "2021"
 license = "MIT"

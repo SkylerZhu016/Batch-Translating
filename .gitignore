@@ -3,7 +3,8 @@ dist/
 dist-web/
 dist-single/
 dist-native/
-dist-desktop/
+/dist-desktop/
+/dist-desktop-scan/
 .tmp-api-extractor/
 .contract-types-tmp/
 .local/
@@ -31,9 +32,22 @@ apps/batch-translating-desktop/src-tauri/binaries/
 apps/batch-translating-desktop/src-tauri/gen/
 apps/batch-translating-desktop/src-tauri/ui/
 apps/batch-translating-desktop/src-tauri/.cargo/
+apps/batch-translating-desktop/src-tauri/resources/translation-rag-service/
 apps/batch-translating-desktop/package-lock.json
 apps/batch-translating-core/test/fixtures/
 apps/batch-translating-core/scripts/fixtures/
+
+# Local RAG environments and runtime data; production Python/TypeScript stays tracked.
+packages/translation-rag/.venv/
+packages/translation-rag/service/.venv/
+packages/translation-rag/.cache/
+packages/translation-rag/.models/
+packages/translation-rag/model-cache/
+packages/translation-rag/**/*.partial
+packages/translation-rag/**/*.sqlite-wal
+packages/translation-rag/**/*.sqlite-shm
+packages/translation-rag/**/*.sqlite3-wal
+packages/translation-rag/**/*.sqlite3-shm
 
 Dockerfile
 docker-compose.yml

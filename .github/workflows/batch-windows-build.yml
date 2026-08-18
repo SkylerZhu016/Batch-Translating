@@ -23,6 +23,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies with frozen lockfile
         run: pnpm install --frozen-lockfile
+      - name: Stage validated RAG service resources
+        run: node scripts/ci/stage-rag-service.mjs
       - name: Run desktop unit tests
         run: cargo test --locked --manifest-path apps/batch-translating-desktop/src-tauri/Cargo.toml
       - name: Build product Web and engine
@@ -57,6 +59,7 @@ jobs:
           node scripts/ci/scan-artifacts.mjs
           apps/batch-translating-desktop/src-tauri/target/release/batch-translating-desktop.exe
           apps/batch-translating-desktop/src-tauri/binaries/batch-translating-engine-x86_64-pc-windows-msvc.exe
+          apps/batch-translating-desktop/src-tauri/resources/translation-rag-service
           dist-desktop-scan
       - name: Collect installer artifacts
         shell: pwsh
@@ -66,5 +69,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: batch-translating-windows-${{ github.sha }}
-          path: dist-desktop
+          path: dist-desktop/*.exe
           if-no-files-found: error

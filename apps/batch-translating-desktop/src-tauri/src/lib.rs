@@ -10,7 +10,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
     menu::{Menu, MenuItem},
+    path::BaseDirectory,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -40,6 +41,10 @@ const REUSE_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 const WINDOW_TITLE: &str = "Batch Translating";
 const ENGINE_EXE_NAME: &str = "batch-translating-engine.exe";
 const ENGINE_EXE_FALLBACK: &str = "kimi.exe";
+const RAG_SERVICE_RESOURCE_DIR: &str = "translation-rag-service";
+const RAG_SERVICE_ENTRY: &str = "src/translation_rag_service/server.py";
+const RAG_SERVICE_ENV: &str = "BATCH_TRANSLATING_RAG_SERVICE_DIR";
+const PRODUCT_CLI_ENV: &str = "BATCH_TRANSLATING_CLI";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
@@ -70,6 +75,8 @@ enum ProbeResult {
 /// Windows closes all process handles when the desktop shell exits, including
 /// on `std::process::exit`. KILL_ON_JOB_CLOSE therefore covers both the normal
 /// tray path and unexpected shell termination after the engine is attached.
+/// Windows automatically associates descendants with the same job, so a RAG
+/// Python process spawned by the engine has the same lifetime boundary.
 #[cfg(windows)]
 struct ProcessJob(usize);
 
@@ -387,8 +394,9 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             let owned_engine = app.state::<OwnedEngine>().inner().clone();
+            let rag_service_dir = resolve_rag_service_dir(app.handle());
             tauri::async_runtime::spawn(async move {
-                let outcome = start_engine_and_wait(&owned_engine);
+                let outcome = start_engine_and_wait(&owned_engine, rag_service_dir.as_deref());
                 owned_engine.mark_startup_complete();
                 let main_handle = handle.clone();
                 let _ = handle.run_on_main_thread(move || match outcome {
@@ -615,7 +623,10 @@ fn monitor_owned_engine(owned_engine: OwnedEngine) {
     });
 }
 
-fn start_engine_and_wait(owned_engine: &OwnedEngine) -> Result<(String, bool), String> {
+fn start_engine_and_wait(
+    owned_engine: &OwnedEngine,
+    rag_service_dir: Option<&Path>,
+) -> Result<(String, bool), String> {
     let engine = find_engine_path()?;
     let engine_fingerprint = fingerprint_engine(&engine)?;
     if let Some((url, state)) = try_reuse_running_server(&engine_fingerprint) {
@@ -623,7 +634,7 @@ fn start_engine_and_wait(owned_engine: &OwnedEngine) -> Result<(String, bool), S
         return Ok((url, false));
     }
 
-    let child = spawn_engine(&engine)?;
+    let child = spawn_engine(&engine, rag_service_dir)?;
     owned_engine.install(child)?;
     let (stdout, stderr) = owned_engine.take_output();
     let (line_sender, line_receiver) = channel::<String>();
@@ -883,6 +894,78 @@ fn find_engine_path() -> Result<PathBuf, String> {
     )
 }
 
+/// Resolve the packaged Python service without treating its absence as an
+/// engine-start failure. The no-BGE quality policy remains available when the
+/// packaged resource is missing or damaged. Development repository probing is
+/// compiled out of release builds and no discovered path is persisted.
+fn resolve_rag_service_dir(app: &AppHandle) -> Option<PathBuf> {
+    let mut diagnostics = Vec::new();
+    match app
+        .path()
+        .resolve(RAG_SERVICE_RESOURCE_DIR, BaseDirectory::Resource)
+    {
+        Ok(candidate) => match validate_rag_service_dir(&candidate) {
+            Ok(validated) => return Some(validated),
+            Err(error) => diagnostics.push(format!("packaged resource: {error}")),
+        },
+        Err(error) => diagnostics.push(format!("resource resolver: {error}")),
+    }
+
+    #[cfg(debug_assertions)]
+    if let Some(candidate) = find_development_rag_service_dir() {
+        eprintln!(
+            "Batch Translating RAG: packaged resource unavailable; using a validated development repository resource"
+        );
+        return Some(candidate);
+    }
+
+    eprintln!(
+        "Batch Translating RAG unavailable; continuing in no-BGE mode: {}",
+        diagnostics.join("; ")
+    );
+    None
+}
+
+fn validate_rag_service_dir(candidate: &Path) -> Result<PathBuf, String> {
+    if !candidate.is_dir() {
+        return Err("service directory is missing".into());
+    }
+    let root = std::fs::canonicalize(candidate)
+        .map_err(|_| "service directory cannot be resolved".to_string())?;
+    let entry = root.join(RAG_SERVICE_ENTRY);
+    if !entry.is_file() {
+        return Err(format!("required entry {RAG_SERVICE_ENTRY} is missing"));
+    }
+    let resolved_entry = std::fs::canonicalize(&entry)
+        .map_err(|_| format!("required entry {RAG_SERVICE_ENTRY} cannot be resolved"))?;
+    if !resolved_entry.starts_with(&root) {
+        return Err("service entry resolves outside the resource directory".into());
+    }
+    Ok(root)
+}
+
+#[cfg(debug_assertions)]
+fn find_development_rag_service_dir() -> Option<PathBuf> {
+    let mut seeds = Vec::new();
+    if let Ok(directory) = std::env::current_dir() {
+        seeds.push(directory);
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            seeds.push(directory.to_path_buf());
+        }
+    }
+    for seed in seeds {
+        for base in seed.ancestors().take(10) {
+            let candidate = base.join("packages/translation-rag/service");
+            if let Ok(validated) = validate_rag_service_dir(&candidate) {
+                return Some(validated);
+            }
+        }
+    }
+    None
+}
+
 fn fingerprint_engine(engine: &PathBuf) -> Result<String, String> {
     let mut file = std::fs::File::open(engine)
         .map_err(|error| format!("无法读取翻译引擎以验证安装身份：{error}"))?;
@@ -900,15 +983,26 @@ fn fingerprint_engine(engine: &PathBuf) -> Result<String, String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-fn spawn_engine(engine: &PathBuf) -> Result<Child, String> {
+fn spawn_engine(engine: &PathBuf, rag_service_dir: Option<&Path>) -> Result<Child, String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let mut command = Command::new(engine);
+        let engine = std::fs::canonicalize(engine)
+            .map_err(|_| "无法解析已验证翻译引擎的启动路径。".to_string())?;
+        let mut command = Command::new(&engine);
         let product_home = product_home_dir();
         command.env("BATCH_TRANSLATING_HOME", &product_home);
         command.env("KIMI_CODE_HOME", &product_home);
         command.env("CHOKIDAR_USEPOLLING", "1");
+        // Never inherit an arbitrary caller-provided service path. Only the
+        // Tauri resource resolver (or debug-only repository fallback) may set
+        // this environment variable for the child engine.
+        command.env_remove(RAG_SERVICE_ENV);
+        command.env_remove(PRODUCT_CLI_ENV);
+        command.env(PRODUCT_CLI_ENV, &engine);
+        if let Some(service_dir) = rag_service_dir {
+            command.env(RAG_SERVICE_ENV, service_dir);
+        }
         command
             .args([
                 "web",
@@ -929,7 +1023,7 @@ fn spawn_engine(engine: &PathBuf) -> Result<Child, String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = engine;
+        let _ = (engine, rag_service_dir);
         Err("当前桌面壳只支持 Windows。".into())
     }
 }

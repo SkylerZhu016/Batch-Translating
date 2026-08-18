@@ -1,13 +1,14 @@
 {
   "name": "@batch-translating/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Tauri desktop shell for Batch Translating: a native window that starts the local Batch Translating engine and opens the workbench web UI.",
   "license": "MIT",
   "scripts": {
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "stage:rag": "node ../../scripts/ci/stage-rag-service.mjs",
+    "tauri:dev": "pnpm stage:rag && tauri dev",
+    "tauri:build": "pnpm stage:rag && tauri build",
     "icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-icons.ps1"
   },
   "devDependencies": {
