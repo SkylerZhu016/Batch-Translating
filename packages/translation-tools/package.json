@@ -1,0 +1,34 @@
+{
+  "name": "@batch-translating/translation-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic EPUB/TXT parsing, artifact validation, merging, and rendering tools for Batch Translating.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./cli": {
+      "types": "./src/cli.ts",
+      "default": "./src/cli.ts"
+    }
+  },
+  "bin": {
+    "batch-translation-tools": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "jszip": "3.10.1",
+    "linkedom": "0.18.12"
+  }
+}
