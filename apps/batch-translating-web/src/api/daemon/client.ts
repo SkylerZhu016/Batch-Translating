@@ -33,6 +33,20 @@ import type {
   PromptSubmission,
   PromptSubmitResult,
   QuestionResponse,
+  TranslationCompletionRequest,
+  TranslationCompletionVerification,
+  TranslationInitializeRequest,
+  TranslationInitializeResult,
+  TranslationInstructionReceipt,
+  TranslationInstructionRequest,
+  TranslationRagDetectRequest,
+  TranslationRagDownloadRequest,
+  TranslationRagRebuildRequest,
+  TranslationRagStatus,
+  TranslationRagVerifyRequest,
+  TranslationReportRequest,
+  TranslationReportResult,
+  TranslationRuntimeStatus,
 } from '../types';
 import { createAgentProjector } from './agentEventProjector';
 import { DaemonHttpClient } from './http';
@@ -81,6 +95,20 @@ import type {
   WireSessionWarningsResponse,
   WireSessionRuntimeStatus,
   WireSessionSnapshot,
+  WireTranslationCompletionRequest,
+  WireTranslationCompletionVerification,
+  WireTranslationInitializeRequest,
+  WireTranslationInitializeResult,
+  WireTranslationInstructionReceipt,
+  WireTranslationInstructionRequest,
+  WireTranslationRagDetectRequest,
+  WireTranslationRagDownloadRequest,
+  WireTranslationRagRebuildRequest,
+  WireTranslationRagStatus,
+  WireTranslationRagVerifyRequest,
+  WireTranslationReportRequest,
+  WireTranslationReportResult,
+  WireTranslationRuntimeStatus,
   WireWorkspace,
   WireLogoutResult,
 } from './wire';
@@ -287,6 +315,145 @@ function toAppTerminal(data: WireTerminal): AppTerminal {
  */
 function isCompactionReason(reason: string): boolean {
   return reason === 'auto_compact' || reason === 'manual_compact';
+}
+
+function toAppTranslationInitializeResult(
+  data: WireTranslationInitializeResult,
+): TranslationInitializeResult {
+  return {
+    projectId: data.project_id,
+    ...(data.initialized_at !== undefined ? { initializedAt: data.initialized_at } : {}),
+    manifest: {
+      ...data.manifest,
+      ...(data.manifest_path !== undefined ? { manifest_path: data.manifest_path } : {}),
+      ...(data.manifest_sha256 !== undefined ? { manifest_sha256: data.manifest_sha256 } : {}),
+    },
+    ledgerSummary: {
+      ...data.ledger_summary,
+      ...(data.database_path !== undefined ? { database_path: data.database_path } : {}),
+      ...(data.integrity_ok !== undefined ? { integrity_ok: data.integrity_ok } : {}),
+    },
+    chapters: data.chapters,
+    sourceReceipt: data.source_receipt,
+    ...(data.quality_capability !== undefined
+      ? { qualityCapability: data.quality_capability }
+      : {}),
+  };
+}
+
+function toAppTranslationRuntimeStatus(
+  data: WireTranslationRuntimeStatus,
+): TranslationRuntimeStatus {
+  return {
+    projectId: data.project_id,
+    status: data.status,
+    ledgerSummary: data.ledger_summary,
+    ...(data.manifest !== undefined ? { manifest: data.manifest } : {}),
+    ...(data.chapters !== undefined ? { chapters: data.chapters } : {}),
+    ...(data.source_receipt !== undefined ? { sourceReceipt: data.source_receipt } : {}),
+    ...(data.latest_instruction !== undefined
+      ? { latestInstruction: data.latest_instruction }
+      : {}),
+    ...(data.completion_receipt !== undefined
+      ? { completionReceipt: data.completion_receipt }
+      : {}),
+    ...(data.final_output !== undefined ? { finalOutput: data.final_output } : {}),
+    ...(data.report_receipt !== undefined ? { reportReceipt: data.report_receipt } : {}),
+    ...(data.budget !== undefined ? { budget: data.budget } : {}),
+    ...(data.integrity !== undefined ? { integrity: data.integrity } : {}),
+    ...(data.quality_capability !== undefined
+      ? { qualityCapability: data.quality_capability }
+      : {}),
+    ...(data.warnings !== undefined ? { warnings: data.warnings } : {}),
+    ...(data.error !== undefined ? { error: data.error } : {}),
+  };
+}
+
+function toWireTranslationAffectedScope(
+  scope: TranslationInstructionRequest['affectedScope'],
+): WireTranslationInstructionRequest['affected_scope'] {
+  return {
+    affected_task_ids: scope.affectedTaskIds,
+    affected_chapter_ids: scope.affectedChapterIds,
+    affected_entities: scope.affectedEntities,
+    global: scope.global,
+    reason: scope.reason,
+  };
+}
+
+function toAppTranslationInstructionReceipt(
+  data: WireTranslationInstructionReceipt,
+): TranslationInstructionReceipt {
+  return {
+    instructionVersion: data.instruction_version,
+    affectedScope: {
+      affectedTaskIds: data.affected_scope.affected_task_ids,
+      affectedChapterIds: data.affected_scope.affected_chapter_ids,
+      affectedEntities: data.affected_scope.affected_entities,
+      global: data.affected_scope.global,
+      reason: data.affected_scope.reason,
+    },
+    staleTaskIds: data.stale_task_ids,
+    cancelledTaskIds: data.cancelled_task_ids,
+    continuedTaskIds: data.continued_task_ids,
+    ...(data.interrupted_task_ids !== undefined
+      ? { interruptedTaskIds: data.interrupted_task_ids }
+      : {}),
+    ...(data.replacement_task_ids !== undefined
+      ? { replacementTaskIds: data.replacement_task_ids }
+      : {}),
+    ...(data.cost_impact !== undefined ? { costImpact: data.cost_impact } : {}),
+    acceptedAt: data.accepted_at,
+  };
+}
+
+function toAppTranslationCompletionVerification(
+  data: WireTranslationCompletionVerification,
+): TranslationCompletionVerification {
+  return {
+    verified: data.verified,
+    ...(data.receipt !== undefined ? { receipt: data.receipt } : {}),
+    ...(data.final_output !== undefined ? { finalOutput: data.final_output } : {}),
+    failures: data.failures,
+  };
+}
+
+function toAppTranslationReportResult(
+  data: WireTranslationReportResult,
+): TranslationReportResult {
+  return {
+    path: data.path,
+    sha256: data.sha256,
+    generatedAt: data.generated_at,
+    ...(data.summary !== undefined ? { summary: data.summary } : {}),
+  };
+}
+
+function toAppTranslationRagStatus(data: WireTranslationRagStatus): TranslationRagStatus {
+  return {
+    state: data.status,
+    serviceStatus: data.service_status,
+    ...(data.source !== undefined ? { source: data.source } : {}),
+    ...(data.progress !== undefined ? { progress: data.progress } : {}),
+    ...(data.downloaded_bytes !== undefined
+      ? { downloadedBytes: data.downloaded_bytes }
+      : {}),
+    ...(data.total_bytes !== undefined ? { totalBytes: data.total_bytes } : {}),
+    ...(data.required_disk_bytes !== undefined
+      ? { requiredDiskBytes: data.required_disk_bytes }
+      : {}),
+    ...(data.available_disk_bytes !== undefined
+      ? { availableDiskBytes: data.available_disk_bytes }
+      : {}),
+    ...(data.model_path !== undefined ? { modelPath: data.model_path } : {}),
+    ...(data.fingerprint !== undefined ? { fingerprint: data.fingerprint } : {}),
+    cpuFallback: data.cpu_fallback,
+    degraded: data.degraded,
+    denseReady: data.dense_ready,
+    indexReady: data.index_ready,
+    points: data.points,
+    ...(data.error !== undefined ? { error: data.error } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1428,7 +1595,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
   // File upload
   // -------------------------------------------------------------------------
 
-  async uploadFile(input: { file: Blob; name?: string }): Promise<{ id: string; name: string; mediaType: string; size: number }> {
+  async uploadFile(input: { file: Blob; name?: string }): Promise<{ id: string; name: string; mediaType: string; size: number; sha256?: string }> {
     const formData = new FormData();
     formData.append('file', input.file, input.name ?? (input.file instanceof File ? input.file.name : 'upload'));
     if (input.name !== undefined) {
@@ -1440,6 +1607,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
       name: data.name,
       mediaType: data.media_type,
       size: data.size,
+      sha256: data.sha256,
     };
   }
 
@@ -1452,6 +1620,172 @@ export class DaemonKimiWebApi implements KimiWebApi {
    *  those natively without the Authorization header, so the URL alone 401s. */
   async getFileBlob(fileId: string): Promise<Blob> {
     return this.http.getBlob(`/files/${encodeURIComponent(fileId)}`);
+  }
+
+  // -------------------------------------------------------------------------
+  // Translation runtime + local BGE-M3/RAG
+  // -------------------------------------------------------------------------
+
+  async initializeTranslationProject(
+    input: TranslationInitializeRequest,
+  ): Promise<TranslationInitializeResult> {
+    const body: WireTranslationInitializeRequest = {
+      project: input.project,
+      source_file_id: input.sourceFileId,
+    };
+    const data = await this.http.post<WireTranslationInitializeResult>(
+      '/translation/projects/initialize',
+      body,
+    );
+    return toAppTranslationInitializeResult(data);
+  }
+
+  async getTranslationProjectStatus(
+    projectId: string,
+    projectRoot: string,
+  ): Promise<TranslationRuntimeStatus> {
+    const data = await this.http.get<WireTranslationRuntimeStatus>(
+      `/translation/projects/${encodeURIComponent(projectId)}/status`,
+      { project_root: projectRoot },
+    );
+    return toAppTranslationRuntimeStatus(data);
+  }
+
+  async recordTranslationInstruction(
+    projectId: string,
+    input: TranslationInstructionRequest,
+  ): Promise<TranslationInstructionReceipt> {
+    const body: WireTranslationInstructionRequest = {
+      project_root: input.projectRoot,
+      session_message_id: input.sessionMessageId,
+      message: input.message,
+      affected_scope: toWireTranslationAffectedScope(input.affectedScope),
+      ...(input.interruptMode !== undefined ? { interrupt_mode: input.interruptMode } : {}),
+    };
+    const data = await this.http.post<WireTranslationInstructionReceipt>(
+      `/translation/projects/${encodeURIComponent(projectId)}/instructions`,
+      body,
+    );
+    return toAppTranslationInstructionReceipt(data);
+  }
+
+  async verifyTranslationCompletion(
+    projectId: string,
+    input: TranslationCompletionRequest,
+  ): Promise<TranslationCompletionVerification> {
+    const body: WireTranslationCompletionRequest = {
+      project_root: input.projectRoot,
+      ...(input.finalArtifact !== undefined ? { final_artifact: input.finalArtifact } : {}),
+      ...(input.finalArtifactIds !== undefined
+        ? { final_artifact_ids: input.finalArtifactIds }
+        : {}),
+      ...(input.finalTaskTypes !== undefined
+        ? { final_task_types: input.finalTaskTypes }
+        : {}),
+      ...(input.requiredTaskTypes !== undefined
+        ? { required_task_types: input.requiredTaskTypes }
+        : {}),
+    };
+    const data = await this.http.post<WireTranslationCompletionVerification>(
+      `/translation/projects/${encodeURIComponent(projectId)}/completion/verify`,
+      body,
+    );
+    return toAppTranslationCompletionVerification(data);
+  }
+
+  async generateTranslationReport(
+    projectId: string,
+    input: TranslationReportRequest,
+  ): Promise<TranslationReportResult> {
+    const body: WireTranslationReportRequest = {
+      project_root: input.projectRoot,
+      ...(input.outputPath !== undefined ? { output_path: input.outputPath } : {}),
+      ...(input.finalArtifact !== undefined ? { final_artifact: input.finalArtifact } : {}),
+      ...(input.translations !== undefined ? { translations: input.translations } : {}),
+      ...(input.finalTaskTypes !== undefined ? { final_task_types: input.finalTaskTypes } : {}),
+      ...(input.requiredTaskTypes !== undefined
+        ? { required_task_types: input.requiredTaskTypes }
+        : {}),
+    };
+    const data = await this.http.post<WireTranslationReportResult>(
+      `/translation/projects/${encodeURIComponent(projectId)}/report`,
+      body,
+    );
+    return toAppTranslationReportResult(data);
+  }
+
+  async getTranslationRagStatus(): Promise<TranslationRagStatus> {
+    const data = await this.http.get<WireTranslationRagStatus>('/translation/rag/status');
+    return toAppTranslationRagStatus(data);
+  }
+
+  async detectTranslationRag(
+    input: TranslationRagDetectRequest = {},
+  ): Promise<TranslationRagStatus> {
+    const body: WireTranslationRagDetectRequest = {
+      ...(input.verifyHashes !== undefined ? { verify_hashes: input.verifyHashes } : {}),
+    };
+    const data = await this.http.post<WireTranslationRagStatus>(
+      '/translation/rag/detect',
+      body,
+    );
+    return toAppTranslationRagStatus(data);
+  }
+
+  async downloadTranslationRag(
+    input: TranslationRagDownloadRequest = {},
+  ): Promise<TranslationRagStatus> {
+    const body: WireTranslationRagDownloadRequest = {
+      ...(input.source !== undefined ? { source: input.source } : {}),
+      ...(input.revision !== undefined ? { revision: input.revision } : {}),
+      ...(input.destination !== undefined ? { destination: input.destination } : {}),
+      ...(input.cpuFallback !== undefined ? { cpu_fallback: input.cpuFallback } : {}),
+    };
+    const data = await this.http.post<WireTranslationRagStatus>(
+      '/translation/rag/download',
+      body,
+    );
+    return toAppTranslationRagStatus(data);
+  }
+
+  async cancelTranslationRagDownload(): Promise<TranslationRagStatus> {
+    const data = await this.http.delete<WireTranslationRagStatus>(
+      '/translation/rag/download',
+    );
+    return toAppTranslationRagStatus(data);
+  }
+
+  async verifyTranslationRag(
+    input: TranslationRagVerifyRequest = {},
+  ): Promise<TranslationRagStatus> {
+    const body: WireTranslationRagVerifyRequest = {
+      ...(input.projectId !== undefined ? { project_id: input.projectId } : {}),
+      ...(input.projectRoot !== undefined ? { project_root: input.projectRoot } : {}),
+      ...(input.bookId !== undefined ? { book_id: input.bookId } : {}),
+      ...(input.cpuFallback !== undefined ? { cpu_fallback: input.cpuFallback } : {}),
+    };
+    const data = await this.http.post<WireTranslationRagStatus>(
+      '/translation/rag/verify',
+      body,
+    );
+    return toAppTranslationRagStatus(data);
+  }
+
+  async rebuildTranslationRagIndex(
+    input: TranslationRagRebuildRequest,
+  ): Promise<TranslationRagStatus> {
+    const body: WireTranslationRagRebuildRequest = {
+      project_id: input.projectId,
+      project_root: input.projectRoot,
+      book_id: input.bookId,
+      ...(input.indexes !== undefined ? { indexes: input.indexes } : {}),
+      ...(input.force !== undefined ? { force: input.force } : {}),
+    };
+    const data = await this.http.post<WireTranslationRagStatus>(
+      '/translation/rag/rebuild',
+      body,
+    );
+    return toAppTranslationRagStatus(data);
   }
 
   // -------------------------------------------------------------------------

@@ -1,4 +1,6 @@
 // apps/batch-translating-web/src/api/types.ts
+import type { TranslationProject } from '../translation/types';
+
 // App-facing camelCase model + KimiWebApi interface.
 // No daemon wire details here — Vue components consume only these types.
 
@@ -700,6 +702,171 @@ export interface AppSkill {
 }
 
 // ---------------------------------------------------------------------------
+// Translation runtime
+// ---------------------------------------------------------------------------
+
+/** Server-owned records kept extensible while the ledger/parser schemas evolve. */
+export type TranslationRuntimeRecord = Record<string, unknown>;
+
+export interface TranslationInitializeRequest {
+  project: TranslationProject;
+  sourceFileId: string;
+}
+
+export interface TranslationInitializeResult {
+  projectId: string;
+  initializedAt?: string;
+  manifest: TranslationRuntimeRecord;
+  ledgerSummary: TranslationRuntimeRecord;
+  chapters: TranslationRuntimeRecord[];
+  sourceReceipt: TranslationRuntimeRecord;
+  qualityCapability?: TranslationRuntimeRecord;
+}
+
+export type TranslationProjectRuntimeState =
+  | 'initializing'
+  | 'ready'
+  | 'running'
+  | 'paused'
+  | 'blocked'
+  | 'completed'
+  | 'failed'
+  | (string & {});
+
+export interface TranslationRuntimeStatus {
+  projectId: string;
+  status: TranslationProjectRuntimeState;
+  ledgerSummary: TranslationRuntimeRecord;
+  manifest?: TranslationRuntimeRecord;
+  chapters?: TranslationRuntimeRecord[];
+  sourceReceipt?: TranslationRuntimeRecord;
+  latestInstruction?: TranslationRuntimeRecord;
+  completionReceipt?: TranslationRuntimeRecord;
+  finalOutput?: TranslationRuntimeRecord;
+  reportReceipt?: TranslationRuntimeRecord;
+  budget?: TranslationRuntimeRecord;
+  integrity?: TranslationRuntimeRecord;
+  qualityCapability?: TranslationRuntimeRecord;
+  warnings?: string[];
+  error?: string;
+}
+
+export interface TranslationAffectedScope {
+  affectedTaskIds: string[];
+  affectedChapterIds: string[];
+  affectedEntities: string[];
+  global: boolean;
+  reason: string;
+}
+
+export interface TranslationInstructionRequest {
+  projectRoot: string;
+  sessionMessageId: string;
+  message: string;
+  affectedScope: TranslationAffectedScope;
+  interruptMode?: 'SOFT' | 'HARD';
+}
+
+export interface TranslationInstructionReceipt {
+  instructionVersion: number;
+  affectedScope: TranslationAffectedScope;
+  staleTaskIds: string[];
+  cancelledTaskIds: string[];
+  continuedTaskIds: string[];
+  interruptedTaskIds?: string[];
+  replacementTaskIds?: string[];
+  costImpact?: TranslationRuntimeRecord;
+  acceptedAt: string;
+}
+
+export interface TranslationCompletionRequest {
+  projectRoot: string;
+  finalArtifact?: TranslationRuntimeRecord;
+  finalArtifactIds?: string[];
+  finalTaskTypes?: string[];
+  requiredTaskTypes?: string[];
+}
+
+export interface TranslationCompletionVerification {
+  verified: boolean;
+  receipt?: TranslationRuntimeRecord;
+  finalOutput?: TranslationRuntimeRecord;
+  failures: string[];
+}
+
+export interface TranslationReportRequest {
+  projectRoot: string;
+  outputPath?: string;
+  finalArtifact?: TranslationRuntimeRecord;
+  translations?: TranslationRuntimeRecord[];
+  finalTaskTypes?: string[];
+  requiredTaskTypes?: string[];
+}
+
+export interface TranslationReportResult {
+  path: string;
+  sha256: string;
+  generatedAt: string;
+  summary?: TranslationRuntimeRecord;
+}
+
+export type TranslationRagState =
+  | 'detected'
+  | 'missing'
+  | 'downloading'
+  | 'verifying'
+  | 'available'
+  | 'failed'
+
+export type TranslationRagSource = 'mirror' | 'official';
+export type TranslationRagServiceStatus = 'starting' | 'ready' | 'degraded' | 'unavailable';
+
+export interface TranslationRagStatus {
+  state: TranslationRagState;
+  serviceStatus: TranslationRagServiceStatus;
+  source?: TranslationRagSource;
+  progress?: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  requiredDiskBytes?: number;
+  availableDiskBytes?: number;
+  modelPath?: string;
+  fingerprint?: string;
+  cpuFallback: boolean;
+  degraded: boolean;
+  denseReady: boolean;
+  indexReady: boolean;
+  points: number;
+  error?: string;
+}
+
+export interface TranslationRagDetectRequest {
+  verifyHashes?: boolean;
+}
+
+export interface TranslationRagDownloadRequest {
+  source?: TranslationRagSource;
+  revision?: string;
+  destination?: string;
+  cpuFallback?: boolean;
+}
+
+export interface TranslationRagVerifyRequest {
+  projectId?: string;
+  projectRoot?: string;
+  bookId?: string;
+  cpuFallback?: boolean;
+}
+
+export interface TranslationRagRebuildRequest {
+  projectId: string;
+  projectRoot: string;
+  bookId: string;
+  indexes?: string[];
+  force?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // KimiWebApi — the app-facing interface
 // ---------------------------------------------------------------------------
 
@@ -773,6 +940,19 @@ export interface KimiWebApi {
   openInApp(sessionId: string, appId: string, path: string, line?: number): Promise<void>;
   connectEvents(handlers: KimiEventHandlers): KimiEventConnection;
 
+  // Durable translation runtime + local BGE-M3/RAG management.
+  initializeTranslationProject(input: TranslationInitializeRequest): Promise<TranslationInitializeResult>;
+  getTranslationProjectStatus(projectId: string, projectRoot: string): Promise<TranslationRuntimeStatus>;
+  recordTranslationInstruction(projectId: string, input: TranslationInstructionRequest): Promise<TranslationInstructionReceipt>;
+  verifyTranslationCompletion(projectId: string, input: TranslationCompletionRequest): Promise<TranslationCompletionVerification>;
+  generateTranslationReport(projectId: string, input: TranslationReportRequest): Promise<TranslationReportResult>;
+  getTranslationRagStatus(): Promise<TranslationRagStatus>;
+  detectTranslationRag(input?: TranslationRagDetectRequest): Promise<TranslationRagStatus>;
+  downloadTranslationRag(input?: TranslationRagDownloadRequest): Promise<TranslationRagStatus>;
+  cancelTranslationRagDownload(): Promise<TranslationRagStatus>;
+  verifyTranslationRag(input?: TranslationRagVerifyRequest): Promise<TranslationRagStatus>;
+  rebuildTranslationRagIndex(input: TranslationRagRebuildRequest): Promise<TranslationRagStatus>;
+
   // Workspaces + daemon folder browser. /workspaces now ships and includes
   // derived workspaces (cwds with sessions that were never explicitly registered).
   listWorkspaces(): Promise<AppWorkspace[]>;
@@ -793,7 +973,7 @@ export interface KimiWebApi {
   refreshOAuthProviderModels(): Promise<ProviderRefreshResult>;
 
   // File upload / download
-  uploadFile(input: { file: Blob; name?: string }): Promise<{ id: string; name: string; mediaType: string; size: number }>;
+  uploadFile(input: { file: Blob; name?: string }): Promise<{ id: string; name: string; mediaType: string; size: number; sha256?: string }>;
   getFileUrl(fileId: string): string;
   /** Fetch a file's bytes with auth — feed the resulting Blob to a blob URL for <video>/<img> src. */
   getFileBlob(fileId: string): Promise<Blob>;

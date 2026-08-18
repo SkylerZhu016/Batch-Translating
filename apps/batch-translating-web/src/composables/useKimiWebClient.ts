@@ -76,6 +76,8 @@ import type {
   ApprovalDecision,
   KimiEventConnection,
   KimiEventMeta,
+  TranslationRagStatus,
+  TranslationRagSource,
   ThinkingLevel,
 } from '../api/types';
 import { createInitialState, reduceAppEvent, type CompactionStatus, type KimiClientState } from '../api/daemon/eventReducer';
@@ -282,6 +284,8 @@ export type PromptAttachment = {
   name?: string;
   mediaType?: string;
   size?: number;
+  /** Local provenance only; prompt serialization deliberately ignores it. */
+  sha256?: string;
 };
 
 /** A prompt waiting for the session to go idle. Keeps the uploaded
@@ -2748,11 +2752,200 @@ const translationCoordinator = useTranslationCoordinator({
       name: uploaded.name,
       mediaType: uploaded.mediaType,
       size: uploaded.size,
+      sha256: uploaded.sha256,
+    };
+  },
+  initializeTranslationProject: async ({ project, sourceFileId }) => (
+    getKimiWebApi().initializeTranslationProject({ project, sourceFileId })
+  ),
+  getTranslationProjectStatus: async ({ projectId, projectRoot }) => (
+    getKimiWebApi().getTranslationProjectStatus(projectId, projectRoot)
+  ),
+  recordTranslationInstruction: async ({
+    projectId,
+    projectRoot,
+    sessionMessageId,
+    message,
+    affectedScope,
+    interruptMode,
+  }) => getKimiWebApi().recordTranslationInstruction(projectId, {
+    projectRoot,
+    sessionMessageId,
+    message,
+    affectedScope,
+    ...(interruptMode !== undefined ? { interruptMode } : {}),
+  }),
+  verifyTranslationCompletion: async ({
+    projectId,
+    projectRoot,
+    finalArtifact,
+    finalArtifactIds,
+    finalTaskTypes,
+    requiredTaskTypes,
+  }) => getKimiWebApi().verifyTranslationCompletion(projectId, {
+    projectRoot,
+    ...(finalArtifact !== undefined ? { finalArtifact } : {}),
+    ...(finalArtifactIds !== undefined ? { finalArtifactIds } : {}),
+    ...(finalTaskTypes !== undefined ? { finalTaskTypes } : {}),
+    ...(requiredTaskTypes !== undefined ? { requiredTaskTypes } : {}),
+  }),
+  generateTranslationReport: async ({
+    projectId,
+    projectRoot,
+    outputPath,
+    finalArtifact,
+    finalTaskTypes,
+    requiredTaskTypes,
+  }) => getKimiWebApi().generateTranslationReport(projectId, {
+    projectRoot,
+    outputPath,
+    ...(finalArtifact !== undefined ? { finalArtifact } : {}),
+    ...(finalTaskTypes !== undefined ? { finalTaskTypes } : {}),
+    ...(requiredTaskTypes !== undefined ? { requiredTaskTypes } : {}),
+  }),
+  getTranslationRagCapability: async () => {
+    const status = await getKimiWebApi().getTranslationRagStatus();
+    return {
+      status: status.state,
+      ...(status.state === 'available' || status.modelPath || status.fingerprint
+        ? { modelId: 'BAAI/bge-m3' }
+        : {}),
+      ...(status.fingerprint ? { fingerprint: status.fingerprint } : {}),
+      source: status.source ? 'managed-download' : 'unknown',
+      denseReady: status.denseReady,
+      indexReady: status.indexReady,
+      serviceReachable: status.serviceStatus === 'ready',
+      degraded: status.degraded || status.serviceStatus === 'degraded',
     };
   },
   forgetSession,
   pushOperationFailure,
 });
+
+const translationRagStatus = ref<TranslationRagStatus>({
+  state: 'missing',
+  serviceStatus: 'starting',
+  cpuFallback: true,
+  degraded: true,
+  denseReady: false,
+  indexReady: false,
+  points: 0,
+});
+const translationRagBusy = ref(false);
+let translationRagPollTimer: ReturnType<typeof setTimeout> | undefined;
+
+function stopTranslationRagPolling(): void {
+  if (translationRagPollTimer !== undefined) {
+    clearTimeout(translationRagPollTimer);
+    translationRagPollTimer = undefined;
+  }
+}
+
+function isTranslationRagTransitional(value: TranslationRagStatus): boolean {
+  return value.state === 'downloading'
+    || value.state === 'verifying';
+}
+
+function setTranslationRagStatus(value: TranslationRagStatus): TranslationRagStatus {
+  translationRagStatus.value = value;
+  stopTranslationRagPolling();
+  if (isTranslationRagTransitional(value)) {
+    translationRagPollTimer = setTimeout(() => {
+      void refreshTranslationRagStatus().catch((error) => {
+        pushOperationFailure('translationRagPolling', error);
+      });
+    }, 1_000);
+  }
+  return value;
+}
+
+function setTranslationRagFailure(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  setTranslationRagStatus({
+    ...translationRagStatus.value,
+    state: 'failed',
+    serviceStatus: 'unavailable',
+    degraded: true,
+    denseReady: false,
+    indexReady: false,
+    error: message,
+  });
+}
+
+async function runTranslationRagAction(
+  operation: string,
+  action: () => Promise<TranslationRagStatus>,
+): Promise<TranslationRagStatus> {
+  translationRagBusy.value = true;
+  try {
+    return setTranslationRagStatus(await action());
+  } catch (error) {
+    setTranslationRagFailure(error);
+    pushOperationFailure(operation, error);
+    throw error;
+  } finally {
+    translationRagBusy.value = false;
+  }
+}
+
+async function refreshTranslationRagStatus(): Promise<TranslationRagStatus> {
+  return runTranslationRagAction(
+    'refreshTranslationRagStatus',
+    () => getKimiWebApi().getTranslationRagStatus(),
+  );
+}
+
+async function detectTranslationRag(): Promise<TranslationRagStatus> {
+  return runTranslationRagAction(
+    'detectTranslationRag',
+    () => getKimiWebApi().detectTranslationRag({ verifyHashes: false }),
+  );
+}
+
+async function downloadTranslationRag(
+  source: TranslationRagSource = translationRagStatus.value.source ?? 'mirror',
+  cpuFallback = true,
+): Promise<TranslationRagStatus> {
+  return runTranslationRagAction(
+    'downloadTranslationRag',
+    () => getKimiWebApi().downloadTranslationRag({ source, cpuFallback }),
+  );
+}
+
+async function cancelTranslationRagDownload(): Promise<TranslationRagStatus> {
+  stopTranslationRagPolling();
+  return runTranslationRagAction(
+    'cancelTranslationRagDownload',
+    () => getKimiWebApi().cancelTranslationRagDownload(),
+  );
+}
+
+async function verifyTranslationRag(cpuFallback = true): Promise<TranslationRagStatus> {
+  const project = translationCoordinator.activeTranslationProject.value;
+  return runTranslationRagAction(
+    'verifyTranslationRag',
+    () => getKimiWebApi().verifyTranslationRag(project ? {
+      projectId: project.projectId,
+      projectRoot: project.paths.projectRoot,
+      bookId: project.initialization?.manifest.bookId ?? project.projectId,
+      cpuFallback,
+    } : { cpuFallback }),
+  );
+}
+
+async function rebuildTranslationRagIndex(): Promise<TranslationRagStatus> {
+  const project = translationCoordinator.activeTranslationProject.value;
+  if (!project) throw new Error('Open a translation project before rebuilding its semantic index');
+  return runTranslationRagAction(
+    'rebuildTranslationRagIndex',
+    () => getKimiWebApi().rebuildTranslationRagIndex({
+      projectId: project.projectId,
+      projectRoot: project.paths.projectRoot,
+      bookId: project.initialization?.manifest.bookId ?? project.projectId,
+      force: true,
+    }),
+  );
+}
 
 /** True when the user is actually watching this session: it is the active
     session, the page is visible, and the window has focus. Focus matters on
@@ -3124,14 +3317,24 @@ export function useKimiWebClient() {
     translationCreating: translationCoordinator.creating,
     translationLoadingBySession: translationCoordinator.loadingBySession,
     translationErrorBySession: translationCoordinator.errorBySession,
+    translationRagStatus,
+    translationRagBusy,
     createTranslationProject: translationCoordinator.createTranslationProject,
     updateTranslationProjectMetadata: translationCoordinator.updateTranslationProjectMetadata,
     deleteTranslationProject: translationCoordinator.deleteTranslationProject,
     selectTranslationProject: translationCoordinator.selectTranslationProject,
+    refreshTranslationProjectRuntime: translationCoordinator.refreshTranslationProjectRuntime,
+    refreshAllTranslationProjectRuntimes: translationCoordinator.refreshAllTranslationProjectRuntimes,
     startTranslationRun: translationCoordinator.startTranslationRun,
     resumeTranslationRun: translationCoordinator.resumeTranslationRun,
     pauseTranslationRun: translationCoordinator.pauseTranslationRun,
     applyUserOverride: translationCoordinator.applyUserOverride,
+    refreshTranslationRagStatus,
+    detectTranslationRag,
+    downloadTranslationRag,
+    cancelTranslationRagDownload,
+    verifyTranslationRag,
+    rebuildTranslationRagIndex,
   };
 }
 

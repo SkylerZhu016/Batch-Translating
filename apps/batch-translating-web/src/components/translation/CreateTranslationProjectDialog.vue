@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import type { TranslationQualityPolicy } from '../../translation/qualityPolicy';
 import Banner from '../ui/Banner.vue';
 import Button from '../ui/Button.vue';
 import Checkbox from '../ui/Checkbox.vue';
@@ -15,6 +16,8 @@ const props = withDefaults(defineProps<{
   modelValue: TranslationProjectDraft;
   saving?: boolean;
   error?: string;
+  /** Omitted/unknown capability probes deliberately fail closed. */
+  qualityPolicy?: TranslationQualityPolicy;
 }>(), {
   saving: false,
 });
@@ -25,17 +28,48 @@ const emit = defineEmits<{
   'source-file': [file: File];
   'source-path': [path: string];
   'choose-workspace': [];
+  'setup-bge': [];
   create: [];
 }>();
 
-const { t } = useI18n();
+const { locale, t } = useI18n();
 const sourceInput = ref<HTMLInputElement | null>(null);
+
+const retrievalReady = computed(
+  () => props.qualityPolicy?.capability.retrievalUsable === true,
+);
+const secondReviewForced = computed(() => !retrievalReady.value);
+const effectiveSecondReview = computed(
+  () => secondReviewForced.value || props.modelValue.workflow.secondReview,
+);
+const policyLocale = computed<'zhCN' | 'en'>(() => (
+  locale.value.toLowerCase().startsWith('zh') ? 'zhCN' : 'en'
+));
+const fallbackNotice = computed(() => policyLocale.value === 'zhCN'
+  ? '未检测到可用的 BGE-M3/RAG。为了保证翻译质量，本任务会强制执行第二轮独立审校与随后修复，这会增加模型调用、耗时和成本。建议先在设置中下载并启用 BGE-M3（GPU 加速建议约 4 GB 可用显存，也可使用较慢的 CPU 模式）。'
+  : 'BGE-M3/RAG is not ready. To protect translation quality, this task must run a second independent review and repair, which increases model calls, time, and cost. Install and enable BGE-M3 in Settings first (GPU acceleration recommends about 4 GB of available VRAM; slower CPU fallback is supported).');
+const qualityNotice = computed(() => props.qualityPolicy
+  ? props.qualityPolicy.notices.cost[policyLocale.value]
+  : fallbackNotice.value);
+const setupBgeLabel = computed(() => policyLocale.value === 'zhCN'
+  ? '前往设置下载 BGE-M3'
+  : 'Download BGE-M3 in Settings');
 
 const canCreate = computed(() => Boolean(
   props.modelValue.sourcePath.trim()
   && props.modelValue.workspacePath.trim()
   && props.modelValue.agentCount >= 2
-  && props.modelValue.agentCount <= 128,
+  && props.modelValue.agentCount <= 128
+  && Number.isSafeInteger(props.modelValue.executionPolicy.softBudgetMicros)
+  && props.modelValue.executionPolicy.softBudgetMicros >= 0
+  && Number.isSafeInteger(props.modelValue.executionPolicy.hardBudgetMicros)
+  && props.modelValue.executionPolicy.hardBudgetMicros
+    >= props.modelValue.executionPolicy.softBudgetMicros
+  && Number.isSafeInteger(props.modelValue.executionPolicy.maxRetries)
+  && props.modelValue.executionPolicy.maxRetries >= 0
+  && Number.isSafeInteger(props.modelValue.executionPolicy.maxConcurrency)
+  && props.modelValue.executionPolicy.maxConcurrency >= 1
+  && props.modelValue.executionPolicy.maxConcurrency <= props.modelValue.agentCount,
 ));
 
 function updateField<K extends keyof TranslationProjectDraft>(
@@ -49,13 +83,63 @@ function updateWorkflow<K extends keyof TranslationWorkflowOptions>(
   key: K,
   value: TranslationWorkflowOptions[K],
 ): void {
+  if (key === 'secondReview' && secondReviewForced.value) return;
   updateField('workflow', { ...props.modelValue.workflow, [key]: value });
 }
+
+watch(
+  [secondReviewForced, () => props.modelValue.workflow.secondReview],
+  ([forced, selected]) => {
+    if (!forced || selected) return;
+    updateField('workflow', { ...props.modelValue.workflow, secondReview: true });
+  },
+  { immediate: true },
+);
 
 function updateAgentCount(value: string): void {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed)) return;
-  updateField('agentCount', Math.min(128, Math.max(2, parsed)));
+  const agentCount = Math.min(128, Math.max(2, parsed));
+  emit('update:modelValue', {
+    ...props.modelValue,
+    agentCount,
+    executionPolicy: {
+      ...props.modelValue.executionPolicy,
+      maxConcurrency: Math.min(agentCount, props.modelValue.executionPolicy.maxConcurrency),
+    },
+  });
+}
+
+function budgetUsd(micros: number): number {
+  return Number((micros / 1_000_000).toFixed(2));
+}
+
+function updateBudget(
+  key: 'softBudgetMicros' | 'hardBudgetMicros',
+  value: string,
+): void {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return;
+  const micros = Math.max(0, Math.round(parsed * 1_000_000));
+  const policy = { ...props.modelValue.executionPolicy, [key]: micros };
+  if (key === 'softBudgetMicros' && policy.hardBudgetMicros < micros) {
+    policy.hardBudgetMicros = micros;
+  } else if (key === 'hardBudgetMicros' && micros < policy.softBudgetMicros) {
+    policy.hardBudgetMicros = policy.softBudgetMicros;
+  }
+  updateField('executionPolicy', policy);
+}
+
+function updatePolicyInteger(
+  key: 'maxRetries' | 'maxConcurrency',
+  value: string,
+): void {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed)) return;
+  const next = key === 'maxRetries'
+    ? Math.min(20, Math.max(0, parsed))
+    : Math.min(props.modelValue.agentCount, Math.max(1, parsed));
+  updateField('executionPolicy', { ...props.modelValue.executionPolicy, [key]: next });
 }
 
 function pickSource(): void {
@@ -169,9 +253,70 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
         </Field>
       </div>
 
+      <div class="create-project__policy-grid">
+        <Field
+          :label="t('translation.settings.executionPolicy.softBudget')"
+          :hint="t('translation.settings.executionPolicy.softBudgetHint')"
+        >
+          <Input
+            :model-value="budgetUsd(modelValue.executionPolicy.softBudgetMicros)"
+            type="number"
+            min="0"
+            step="1"
+            @update:model-value="updateBudget('softBudgetMicros', String($event))"
+          />
+        </Field>
+        <Field
+          :label="t('translation.settings.executionPolicy.hardBudget')"
+          :hint="t('translation.settings.executionPolicy.hardBudgetHint')"
+        >
+          <Input
+            :model-value="budgetUsd(modelValue.executionPolicy.hardBudgetMicros)"
+            type="number"
+            :min="budgetUsd(modelValue.executionPolicy.softBudgetMicros)"
+            step="1"
+            @update:model-value="updateBudget('hardBudgetMicros', String($event))"
+          />
+        </Field>
+        <Field
+          :label="t('translation.settings.executionPolicy.maxRetries')"
+          :hint="t('translation.settings.executionPolicy.maxRetriesHint')"
+        >
+          <Input
+            :model-value="modelValue.executionPolicy.maxRetries"
+            type="number"
+            min="0"
+            max="20"
+            step="1"
+            @update:model-value="updatePolicyInteger('maxRetries', String($event))"
+          />
+        </Field>
+        <Field
+          :label="t('translation.settings.executionPolicy.maxConcurrency')"
+          :hint="t('translation.settings.executionPolicy.maxConcurrencyHint')"
+        >
+          <Input
+            :model-value="modelValue.executionPolicy.maxConcurrency"
+            type="number"
+            min="1"
+            :max="modelValue.agentCount"
+            step="1"
+            @update:model-value="updatePolicyInteger('maxConcurrency', String($event))"
+          />
+        </Field>
+      </div>
+
       <fieldset class="create-project__workflow">
         <legend>{{ t('translation.create.workflowTitle') }}</legend>
         <p>{{ t('translation.create.workflowHint') }}</p>
+
+        <div v-if="secondReviewForced" class="create-project__quality-notice">
+          <Banner variant="warning">{{ qualityNotice }}</Banner>
+          <Button variant="secondary" size="sm" type="button" @click="emit('setup-bge')">
+            <Icon name="download" size="md" />
+            {{ setupBgeLabel }}
+          </Button>
+        </div>
 
         <div class="create-project__workflow-grid">
           <div class="create-project__workflow-item is-required">
@@ -197,7 +342,8 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
           </div>
           <div class="create-project__workflow-item">
             <Checkbox
-              :model-value="modelValue.workflow.secondReview"
+              :model-value="effectiveSecondReview"
+              :disabled="secondReviewForced"
               @update:model-value="updateWorkflow('secondReview', $event)"
             >
               {{ t('translation.create.secondReview') }}
@@ -314,6 +460,12 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
   flex: none;
 }
 
+.create-project__policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
 .create-project__workflow {
   margin: 0;
   padding: var(--space-4);
@@ -333,6 +485,22 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
   margin: 0 0 var(--space-3);
   color: var(--color-text-muted);
   font-size: var(--text-sm);
+}
+
+.create-project__quality-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.create-project__quality-notice > :first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.create-project__quality-notice > :deep(button) {
+  flex: none;
 }
 
 .create-project__workflow-grid {
@@ -365,7 +533,8 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
 
 @media (max-width: 640px) {
   .create-project__picker,
-  .create-project__row {
+  .create-project__row,
+  .create-project__quality-notice {
     align-items: stretch;
     flex-direction: column;
   }
@@ -375,6 +544,10 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
   }
 
   .create-project__workflow-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .create-project__policy-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

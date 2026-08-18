@@ -10,7 +10,7 @@
  * scope.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 
 import type { FileMeta } from './fileService';
@@ -53,6 +53,10 @@ function isFileMeta(value: unknown): value is FileMeta {
     typeof meta['size'] === 'number' &&
     Number.isSafeInteger(meta['size']) &&
     meta['size'] >= 0 &&
+    (
+      meta['sha256'] === undefined
+      || (typeof meta['sha256'] === 'string' && /^[0-9a-f]{64}$/.test(meta['sha256']))
+    ) &&
     typeof meta['created_at'] === 'string' &&
     (meta['expires_at'] === undefined || typeof meta['expires_at'] === 'string')
   );
@@ -71,10 +75,12 @@ export class FileServiceImpl implements IFileService {
 
     const id = `f_${randomUUID()}`;
     let size = 0;
+    const hash = createHash('sha256');
     const counting = async function* (): AsyncIterable<Uint8Array> {
       for await (const chunk of source) {
         const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
         size += buf.length;
+        hash.update(buf);
         yield buf;
       }
     };
@@ -91,6 +97,7 @@ export class FileServiceImpl implements IFileService {
       name: options.name ?? filename,
       media_type: options.mimeType ?? 'application/octet-stream',
       size,
+      sha256: hash.digest('hex'),
       created_at: new Date(now).toISOString(),
       ...(options.expiresInSec !== undefined
         ? { expires_at: new Date(now + options.expiresInSec * 1000).toISOString() }

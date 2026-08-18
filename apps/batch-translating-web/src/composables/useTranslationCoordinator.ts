@@ -1,9 +1,22 @@
 import { computed, reactive, ref, type ComputedRef } from 'vue';
 import type { AppGoal, AppSession } from '../api/types';
 import {
+  buildCoordinatorQualityPolicyEnvelope,
   createTranslationProject as createProjectMetadata,
+  createTranslationInstructionReceipt,
+  createTranslationQualityPolicy,
+  createTranslationQualityPolicyReceipt,
+  hasVerifiedTranslationInitialization,
+  hasVerifiedTranslationCompletion,
+  mergeTranslationCompletionVerification,
+  mergeTranslationInitialization,
+  mergeTranslationInstructionReceipt,
+  mergeTranslationRuntimeStatus,
+  mergeTranslationReportReceipt,
   parseProjectMetadata,
+  type BgeM3CapabilityProbe,
   type OverrideScope,
+  type RagCapabilityProbe,
   type TranslationCoordinatorAttachment,
   type TranslationCoordinatorLaunch,
   type TranslationProject,
@@ -43,12 +56,49 @@ export interface CreateTranslationProjectRequest {
   model?: string;
   workflow: WorkflowOptions;
   maxAgents: number;
+  executionPolicy?: {
+    softBudgetMicros: number;
+    hardBudgetMicros: number;
+    maxRetries: number;
+    maxConcurrency: number;
+  };
 }
 
 export interface ApplyTranslationOverrideRequest {
   text: string;
   /** Reserved for the Phase 3 affected-scope ledger. Never encoded into a side-channel prompt. */
   scope?: OverrideScope;
+}
+
+/** Strict runtime evidence used to select the RAG or adjacent-chapter policy. */
+export interface TranslationRagRuntimeCapability {
+  status: 'detected' | 'missing' | 'downloading' | 'verifying' | 'available' | 'failed';
+  modelId?: string;
+  fingerprint?: string;
+  source?: 'environment' | 'local-cache' | 'managed-download' | 'unknown';
+  denseReady?: boolean;
+  indexReady?: boolean;
+  serviceReachable?: boolean;
+  indexVersion?: string;
+  degraded?: boolean;
+}
+
+export interface TranslationInstructionRuntimeAck {
+  instructionVersion: number;
+  affectedScope: {
+    affectedTaskIds: string[];
+    affectedChapterIds: string[];
+    affectedEntities: string[];
+    global: boolean;
+    reason: string;
+  };
+  staleTaskIds: string[];
+  cancelledTaskIds: string[];
+  continuedTaskIds: string[];
+  interruptedTaskIds?: string[];
+  replacementTaskIds?: string[];
+  costImpact?: Record<string, unknown>;
+  acceptedAt: string;
 }
 
 export interface TranslationCoordinatorHost {
@@ -94,6 +144,45 @@ export interface TranslationCoordinatorHost {
   ): Promise<void>;
   abortSession(sessionId: string): Promise<void>;
   uploadFile(file: Blob, name?: string): Promise<PromptAttachment>;
+  initializeTranslationProject(input: {
+    project: TranslationProject;
+    sourceFileId: string;
+  }): Promise<TranslationInstructionRuntimeAck>;
+  getTranslationProjectStatus(input: {
+    projectId: string;
+    projectRoot: string;
+  }): Promise<unknown>;
+  recordTranslationInstruction(input: {
+    projectId: string;
+    projectRoot: string;
+    sessionMessageId: string;
+    message: string;
+    affectedScope: {
+      affectedTaskIds: string[];
+      affectedChapterIds: string[];
+      affectedEntities: string[];
+      global: boolean;
+      reason: string;
+    };
+    interruptMode?: 'SOFT' | 'HARD';
+  }): Promise<unknown>;
+  verifyTranslationCompletion(input: {
+    projectId: string;
+    projectRoot: string;
+    finalArtifact?: Record<string, unknown>;
+    finalArtifactIds?: string[];
+    finalTaskTypes?: string[];
+    requiredTaskTypes?: string[];
+  }): Promise<unknown>;
+  generateTranslationReport(input: {
+    projectId: string;
+    projectRoot: string;
+    outputPath: string;
+    finalArtifact?: Record<string, unknown>;
+    finalTaskTypes?: string[];
+    requiredTaskTypes?: string[];
+  }): Promise<unknown>;
+  getTranslationRagCapability(): Promise<TranslationRagRuntimeCapability>;
   forgetSession(sessionId: string): void;
   pushOperationFailure(operation: string, error: unknown, options?: { sessionId?: string }): void;
 }
@@ -126,6 +215,74 @@ function translationModelPriority(model: string): number {
   const normalized = model.split('/').at(-1)?.trim();
   const priority = TRANSLATION_MODEL_PRIORITY.findIndex((candidate) => candidate === normalized);
   return priority === -1 ? TRANSLATION_MODEL_PRIORITY.length : priority;
+}
+
+function qualityProbeFromRuntime(
+  runtime: TranslationRagRuntimeCapability | undefined,
+): { bgeM3?: BgeM3CapabilityProbe; rag?: RagCapabilityProbe } {
+  if (runtime === undefined) return {};
+  const available = runtime.status === 'available' && runtime.degraded !== true;
+  return {
+    bgeM3: {
+      status: available ? 'ready' : runtime.status === 'failed' ? 'unhealthy' : 'missing',
+      ...(runtime.modelId ? { modelId: runtime.modelId } : {}),
+      ...(runtime.fingerprint ? { fingerprint: runtime.fingerprint } : {}),
+      ...(runtime.source ? { source: runtime.source } : {}),
+      denseAvailable: available && runtime.denseReady === true,
+    },
+    rag: {
+      status: available && runtime.indexReady === true ? 'ready' : 'unhealthy',
+      serviceReachable: available && runtime.serviceReachable === true,
+      denseRetrievalAvailable: available
+        && runtime.denseReady === true
+        && runtime.indexReady === true,
+      ...(runtime.indexVersion ? { indexVersion: runtime.indexVersion } : {}),
+    },
+  };
+}
+
+function instructionAffectedScope(scope: OverrideScope | undefined): {
+  affectedTaskIds: string[];
+  affectedChapterIds: string[];
+  affectedEntities: string[];
+  global: boolean;
+  reason: string;
+} {
+  if (scope === undefined || scope.kind === 'project') {
+    return {
+      affectedTaskIds: [],
+      affectedChapterIds: [],
+      affectedEntities: [],
+      global: true,
+      reason: 'User correction applies to the project unless deterministic dependency analysis narrows it.',
+    };
+  }
+  if (scope.kind === 'chapter') {
+    return {
+      affectedTaskIds: [],
+      affectedChapterIds: [scope.chapterId],
+      affectedEntities: [],
+      global: false,
+      reason: 'User selected a chapter-scoped correction.',
+    };
+  }
+  return {
+    affectedTaskIds: [],
+    affectedChapterIds: [scope.chapterId],
+    affectedEntities: scope.paragraphIds,
+    global: false,
+    reason: 'User selected stable paragraph IDs within one chapter.',
+  };
+}
+
+function clientReceiptId(prefix: string): string {
+  const random = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}_${random}`;
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function withProjectStatus(
@@ -164,8 +321,14 @@ function createCoordinatorLaunch(
     status: 'prepared',
     preparedAt: stamp,
     updatedAt: stamp,
+    // sha256 is project/ledger provenance, not prompt attachment semantics.
+    // Persist it on project.source below and keep the paid prompt shape stable.
     attachments: attachments.map((attachment): TranslationCoordinatorAttachment => ({
-      ...attachment,
+      fileId: attachment.fileId,
+      kind: attachment.kind,
+      ...(attachment.name !== undefined ? { name: attachment.name } : {}),
+      ...(attachment.mediaType !== undefined ? { mediaType: attachment.mediaType } : {}),
+      ...(attachment.size !== undefined ? { size: attachment.size } : {}),
     })),
   };
 }
@@ -200,13 +363,15 @@ function transitionCoordinatorLaunch(
   }, projectStatus);
 }
 
-function hasVerifiedTranslationCompletion(_project: TranslationProject): boolean {
-  // Phase 1 deliberately has no completion fast-path. Paths, hashes and stage
-  // flags written by an Agent are claims, not byte-level evidence. Phase 2's
-  // deterministic SQLite ledger/merger must stat the artifact, recompute its
-  // hash, and bind source/instruction/plan revisions before this may return
-  // true. Until then every native `goal complete` is rejected fail-closed.
-  return false;
+function hasPassedCompletionReceipt(project: TranslationProject): boolean {
+  const verification = project.completionVerification;
+  return verification?.status === 'passed'
+    && verification.verified === true
+    && verification.complete === true
+    && verification.integrity.ok === true
+    && verification.blockers.length === 0
+    && verification.failures.length === 0
+    && verification.finalOutput !== undefined;
 }
 
 export function buildTranslationCoordinatorGoal(
@@ -222,17 +387,41 @@ export function buildTranslationCoordinatorGoal(
   const modelPolicy = model?.trim()
     ? `Use only the session model pinned as "${model.trim()}". Do not switch models or providers.`
     : 'Use only the model pinned to this session. Do not switch models or providers.';
+  const qualityPolicyEnvelope = project.qualityPolicy?.policy
+    ? buildCoordinatorQualityPolicyEnvelope(project.qualityPolicy.policy)
+    : {
+        capability_mode: 'adjacent-chapter-fallback',
+        failure: 'No verified RAG capability receipt is present. Fail closed and require two independent reviews plus repair after each review.',
+      };
+  const runtimeEnvelope = {
+    project_id: project.projectId,
+    project_root: project.paths.projectRoot,
+    ledger_database: project.initialization?.ledgerSummary.databasePath,
+    manifest_path: project.initialization?.manifest.path,
+    source_copy: project.paths.sourceCopy,
+    final_output: project.paths.finalOutputPath,
+    final_report: project.paths.finalReportPath,
+    instruction_version: project.instructionVersion,
+    plan_fingerprint: project.planFingerprint,
+    execution_policy: project.executionPolicy,
+  };
 
   return [
     `Translate the complete source book for project "${project.name}" (${project.projectId}) into a publication-ready Chinese edition.`,
-    `The immutable source reference is "${project.source.sourcePath}". The final output belongs at "${project.paths.finalOutputPath}".`,
+    `The immutable verified source copy is "${project.paths.sourceCopy}" (upload provenance: "${project.source.sourcePath}"). The final output belongs at "${project.paths.finalOutputPath}".`,
     `Selected quality gates: ${enabledQualityGates.join('; ')}. Maximum concurrent agents: ${project.maxAgents}.`,
     modelPolicy,
+    `Deterministic runtime envelope (JSON): ${JSON.stringify(runtimeEnvelope)}. These program-owned paths, versions, fingerprints and limits are authoritative; do not infer replacements.`,
+    `Authoritative quality policy envelope (JSON): ${JSON.stringify(qualityPolicyEnvelope)}. Enforce it exactly; an absent, stale, or non-ready RAG receipt never unlocks the second-review gate.`,
     'Act as the long-running translation Coordinator in this same session. Plan and delegate autonomously, preserve source and artifact provenance, and never overwrite an accepted immutable artifact in place.',
-    'Treat the project ledger as authoritative. If a required ledger, artifact, quality gate, or validation capability is unavailable, report the project as blocked instead of inventing success.',
+    'Treat the deterministic SQLite project ledger as the sole scheduling and completion authority. Bash is Git Bash on Windows too: when BATCH_TRANSLATING_CLI is present, always invoke `"$BATCH_TRANSLATING_CLI" translation ...`. Only when that variable is absent may you use `batch-translating translation ...`. Never use PowerShell `$env:`, guess PATH, or select another executable.',
+    'Within that bundled CLI, use only the `translation project ...`, `translation ledger ...`, `translation tools ...`, and `translation rag ...` interfaces. Never hand-edit SQLite, shared translations, Canonical State, XHTML, or EPUB output.',
+    'Every claimed task, attempt, instruction, artifact, hash, lease, stale transition, cost, merge and quality gate must be recorded by the deterministic runtime. If a required ledger, artifact, quality gate, CLI capability, source hash, or validation receipt is unavailable, report the project as blocked instead of inventing success.',
+    'After every Agent or AgentSwarm result, immediately record its input/output/cache tokens and usage through the ledger cost record-usage operation before accepting the result. When model pricing is unknown, record actual cost as 0 while preserving token usage and an explicit unknown-price warning; never omit usage or fabricate a price.',
     'Ordinary user messages are live steering for this same session: acknowledge them, explain the affected scope and cost impact, keep unrelated work running, and continue the long-term goal without asking the user to type "continue".',
     'A normal message is not Stop. Only an explicit Stop/Cancel action may hard-cancel work; otherwise prefer a safe atomic boundary and preserve valid completed work.',
     'Do not use a fixed application-owned stage queue. Choose the next valid work from the goal, current session state, selected quality gates, budget, and project ledger.',
+    'Never mark the native goal complete merely because agents finished. Completion is accepted only after the application verifies the real final file and SHA-256 against the immutable source, current plan and instruction versions, required task/artifact receipts, duplicate-free deterministic merge, and SQLite integrity check.',
   ].join('\n\n');
 }
 
@@ -351,18 +540,73 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       goal.status === 'active'
       && launch?.status !== 'accepted'
     ) return { project: current.project, completionRejected: false };
-    const status: TranslationProject['status'] = goal.status === 'complete'
-      ? hasVerifiedTranslationCompletion(current.project)
-        ? 'completed'
-        : 'failed'
-      : goal.status === 'active'
-        ? 'running'
-        : 'paused';
-    const completionRejected = (
-      goal.status === 'complete'
-      && status === 'failed'
-      && current.project.status !== 'failed'
-    );
+    if (goal.status === 'complete') {
+      if (hasVerifiedTranslationCompletion(current.project)) {
+        return {
+          project: await setProjectStatus(sessionId, 'completed'),
+          completionRejected: false,
+        };
+      }
+      try {
+        const verification = await host.verifyTranslationCompletion({
+          projectId: current.project.projectId,
+          projectRoot: current.project.paths.projectRoot,
+        });
+        let merged = mergeTranslationCompletionVerification(current.project, verification);
+        const completionPassed = hasPassedCompletionReceipt(merged);
+        if (completionPassed) {
+          try {
+            const report = await host.generateTranslationReport({
+              projectId: merged.projectId,
+              projectRoot: merged.paths.projectRoot,
+              outputPath: merged.paths.finalReportPath,
+            });
+            merged = mergeTranslationReportReceipt(merged, report);
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            merged = {
+              ...withProjectStatus(merged, 'failed'),
+              runtimeError: {
+                phase: 'export',
+                code: 'FINAL_REPORT_GENERATION_FAILED',
+                message: `Final output passed verification, but the deterministic technical report was not recorded: ${reason}`,
+                retryable: true,
+                occurredAt: now(),
+              },
+            };
+          }
+        }
+        const verified = hasVerifiedTranslationCompletion(merged);
+        const persisted = await updateTranslationProjectMetadata(
+          sessionId,
+          withProjectStatus(merged, verified ? 'completed' : 'failed'),
+        );
+        return { project: persisted, completionRejected: !verified };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const failed: TranslationProject = {
+          ...withProjectStatus(current.project, 'failed'),
+          runtimeError: {
+            phase: 'completion',
+            code: 'COMPLETION_VERIFICATION_UNAVAILABLE',
+            message: `Completion verification failed: ${reason}`,
+            retryable: true,
+            occurredAt: now(),
+          },
+        };
+        try {
+          return {
+            project: await updateTranslationProjectMetadata(sessionId, failed),
+            completionRejected: true,
+          };
+        } catch (persistError) {
+          host.pushOperationFailure('translationCompletionVerificationPersist', persistError, { sessionId });
+          return { project: failed, completionRejected: true };
+        }
+      }
+    }
+    const status: TranslationProject['status'] = goal.status === 'active' ? 'running' : 'paused';
+    const completionRejected = false;
     if (
       status !== 'completed'
       && (current.project.status === 'failed' || current.project.status === 'completed')
@@ -393,6 +637,19 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       const resolved = await ensureProjectModel(sessionId, sourceProject, model);
       let project = resolved.project;
       const pinnedModel = resolved.model;
+      if (!hasVerifiedTranslationInitialization(project)) {
+        const runtime = await host.getTranslationProjectStatus({
+          projectId: project.projectId,
+          projectRoot: project.paths.projectRoot,
+        });
+        project = mergeTranslationRuntimeStatus(project, runtime);
+        project = await updateTranslationProjectMetadata(sessionId, project);
+      }
+      if (!hasVerifiedTranslationInitialization(project)) {
+        throw new Error(
+          'Translation project initialization is not verified; no goal or paid model request was started',
+        );
+      }
       const objective = buildTranslationCoordinatorGoal(project, pinnedModel);
 
       let goal: AppGoal | null;
@@ -649,36 +906,80 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       if (!input.sourceFile && !input.sourcePath?.trim()) {
         throw new Error('Select an EPUB or TXT file before creating the project');
       }
-      const pinnedModel = requireAllowedTranslationModel(input.model);
-      const selectedPriority = translationModelPriority(pinnedModel);
-      const higherPriorityAvailable = host.availableModelIds?.value.some(
-        (candidate) => (
-          isAllowedTranslationModel(candidate)
-          && translationModelPriority(candidate) < selectedPriority
-        ),
-      ) === true;
-      if (higherPriorityAvailable) {
-        throw new Error(
-          `${TRANSLATION_MODEL_PRIORITY[1]} is only available as a fallback when ${TRANSLATION_MODEL_PRIORITY[0]} is unavailable`,
-        );
+      const availableModelIds = host.availableModelIds?.value ?? (input.model ? [input.model] : []);
+      let ragRuntime: TranslationRagRuntimeCapability | undefined;
+      try {
+        ragRuntime = await host.getTranslationRagCapability();
+      } catch (error) {
+        // Capability discovery fails closed. Creation may continue with the
+        // mandatory adjacent-chapter + second-review policy, never fake RAG.
+        host.pushOperationFailure('translationRagCapability', error);
+      }
+      const qualityPolicy = createTranslationQualityPolicy({
+        capabilityProbe: qualityProbeFromRuntime(ragRuntime),
+        requestedWorkflow: input.workflow,
+        availableModelIds,
+      });
+      const pinnedModel = requireAllowedTranslationModel(qualityPolicy.model.selectedModelId);
+      if (
+        input.model?.trim()
+        && requireAllowedTranslationModel(input.model) !== pinnedModel
+        && translationModelPriority(input.model) < translationModelPriority(pinnedModel)
+      ) {
+        throw new Error('The requested primary translation model is listed but could not be selected');
       }
       const sourceName = input.sourceFile?.name ?? input.sourcePath!.split(/[\\/]/).at(-1)!;
       const uploaded = input.sourceFile
         ? await host.uploadFile(input.sourceFile, sourceName)
         : undefined;
+      if (
+        uploaded === undefined
+        || uploaded.sha256 === undefined
+        || !/^[0-9a-f]{64}$/.test(uploaded.sha256)
+        || uploaded.size === undefined
+        || !Number.isSafeInteger(uploaded.size)
+        || uploaded.size < 0
+      ) {
+        throw new Error(
+          'New translation projects require an uploaded source with a verified SHA-256; select the EPUB or TXT file instead of entering a local path',
+        );
+      }
       const sourceReference = input.sourcePath?.trim() || `attachments/${sourceName}`;
       const project = createProjectMetadata({
         name: input.name,
         model: pinnedModel,
         sourcePath: sourceReference,
+        sourceSha256: uploaded.sha256,
+        sourceSizeBytes: uploaded.size,
         chapterPattern: input.chapterPattern,
         projectRoot: input.projectRoot,
-        workflow: input.workflow,
+        workflow: qualityPolicy.effectiveWorkflow,
+        qualityPolicy: createTranslationQualityPolicyReceipt({
+          recordedAt: now(),
+          capabilityEvidence: qualityProbeFromRuntime(ragRuntime),
+          policy: qualityPolicy,
+        }),
         maxAgents: input.maxAgents,
+        executionPolicy: input.executionPolicy ?? {
+          softBudgetMicros: 20_000_000,
+          hardBudgetMicros: 30_000_000,
+          maxRetries: 2,
+          maxConcurrency: Math.min(input.maxAgents, 16),
+        },
       });
-      const preparedProject = withCoordinatorLaunch(
+      const initialization = await host.initializeTranslationProject({
         project,
-        createCoordinatorLaunch(project, uploaded ? [uploaded] : []),
+        sourceFileId: uploaded.fileId,
+      });
+      const initializedProject = mergeTranslationInitialization(project, initialization);
+      if (!hasVerifiedTranslationInitialization(initializedProject)) {
+        throw new Error(
+          'The source copy, hash, manifest, chapters, or SQLite ledger could not be verified; no paid model request was started',
+        );
+      }
+      const preparedProject = withCoordinatorLaunch(
+        initializedProject,
+        createCoordinatorLaunch(initializedProject, [uploaded]),
         'ready',
       );
       createdSession = await host.createSession({
@@ -782,6 +1083,32 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
     await host.selectSession(sessionId);
   }
 
+  async function refreshTranslationProjectRuntime(sessionId: string): Promise<TranslationProject> {
+    return serializeTransition(sessionId, async () => {
+      const current = findProjectSession(sessionId).project;
+      const runtime = await host.getTranslationProjectStatus({
+        projectId: current.projectId,
+        projectRoot: current.paths.projectRoot,
+      });
+      let merged = mergeTranslationRuntimeStatus(current, runtime);
+      if (hasVerifiedTranslationCompletion(merged)) {
+        merged = withProjectStatus(merged, 'completed');
+      }
+      return updateTranslationProjectMetadata(sessionId, merged);
+    });
+  }
+
+  async function refreshAllTranslationProjectRuntimes(): Promise<void> {
+    const sessions = [...translationProjectSessions.value];
+    await Promise.all(sessions.map(async ({ sessionId }) => {
+      try {
+        await refreshTranslationProjectRuntime(sessionId);
+      } catch (error) {
+        setError(sessionId, error);
+      }
+    }));
+  }
+
   async function applyUserOverride(
     sessionId: string,
     input: ApplyTranslationOverrideRequest,
@@ -806,7 +1133,101 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       // a normal turn while idle, or submits+steers into the active turn without
       // aborting it. The user's text is kept verbatim; there is no phase queue or
       // hidden wrapper that delays Coordinator visibility.
-      await host.steerPrompt(sessionId, text, undefined, { permissionMode: 'auto' });
+      const sessionMessageId = clientReceiptId('translation_instruction');
+      const steerPromise = host.steerPrompt(
+        sessionId,
+        text,
+        undefined,
+        { permissionMode: 'auto' },
+      );
+      const instructionPromise = host.recordTranslationInstruction({
+        projectId: entry.project.projectId,
+        projectRoot: entry.project.paths.projectRoot,
+        sessionMessageId,
+        message: text,
+        affectedScope: instructionAffectedScope(input.scope),
+        interruptMode: 'SOFT',
+      });
+      const [steerResult, instructionResult] = await Promise.allSettled([
+        steerPromise,
+        instructionPromise,
+      ]);
+
+      if (instructionResult.status === 'fulfilled') {
+        const live = findProjectSession(sessionId).project;
+        const acknowledgement = instructionResult.value;
+        const cost = acknowledgement.costImpact ?? {};
+        const receipt = createTranslationInstructionReceipt({
+          eventId: `${live.projectId}:instruction:${acknowledgement.instructionVersion}`,
+          sessionMessageId,
+          instructionVersion: acknowledgement.instructionVersion,
+          message: text,
+          affectedScope: acknowledgement.affectedScope,
+          interruptMode: 'SOFT',
+          appliedAt: acknowledgement.acceptedAt,
+          continuedTaskIds: acknowledgement.continuedTaskIds,
+          cancelledTaskIds: acknowledgement.cancelledTaskIds,
+          interruptedTaskIds: acknowledgement.interruptedTaskIds ?? [],
+          staleTaskIds: acknowledgement.staleTaskIds,
+          replacementTaskIds: acknowledgement.replacementTaskIds ?? [],
+          costImpact: {
+            actualCostMicrosDelta: nonNegativeInteger(
+              cost.actualCostMicrosDelta ?? cost.actual_cost_micros_delta,
+            ),
+            discardedCostMicros: nonNegativeInteger(
+              cost.discardedCostMicros ?? cost.discarded_cost_micros,
+            ),
+            estimatedAdditionalCostMicros: nonNegativeInteger(
+              cost.estimatedAdditionalCostMicros ?? cost.estimated_additional_cost_micros,
+            ),
+            additionalPaidTaskCount: nonNegativeInteger(
+              cost.additionalPaidTaskCount ?? cost.additional_paid_task_count,
+            ),
+            ...(typeof cost.reason === 'string' && cost.reason.trim()
+              ? { reason: cost.reason.trim() }
+              : {}),
+          },
+        });
+        const merged = mergeTranslationInstructionReceipt(live, receipt);
+        await updateTranslationProjectMetadata(sessionId, {
+          ...merged,
+          runtimeError: undefined,
+        });
+      } else {
+        const reason = instructionResult.reason instanceof Error
+          ? instructionResult.reason.message
+          : String(instructionResult.reason);
+        const live = findProjectSession(sessionId).project;
+        try {
+          await updateTranslationProjectMetadata(sessionId, {
+            ...live,
+            revision: live.revision + 1,
+            updatedAt: now(),
+            runtimeError: {
+              phase: 'instruction',
+              code: 'INSTRUCTION_NOT_RECORDED',
+              message: `Correction is visible in the Coordinator session but was not recorded in the project ledger: ${reason}`,
+              retryable: true,
+              occurredAt: now(),
+              details: { sessionMessageId },
+            },
+          });
+        } catch (persistError) {
+          host.pushOperationFailure('translationInstructionFailurePersist', persistError, { sessionId });
+        }
+        const error = new Error(
+          `Correction was sent to the Coordinator but was not recorded in the project ledger: ${reason}`,
+        );
+        setError(sessionId, error);
+        throw error;
+      }
+      if (steerResult.status === 'rejected') {
+        const error = steerResult.reason instanceof Error
+          ? steerResult.reason
+          : new Error(String(steerResult.reason));
+        setError(sessionId, error);
+        throw error;
+      }
     });
   }
 
@@ -902,6 +1323,8 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
     updateTranslationProjectMetadata,
     deleteTranslationProject,
     selectTranslationProject,
+    refreshTranslationProjectRuntime,
+    refreshAllTranslationProjectRuntimes,
     startTranslationRun,
     resumeTranslationRun,
     pauseTranslationRun,

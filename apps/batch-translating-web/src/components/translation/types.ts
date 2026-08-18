@@ -1,3 +1,5 @@
+import type { BgeModelDownloadSource } from './bgeModelSetup.types';
+
 export type TranslationView = 'projects' | 'run' | 'issues' | 'outputs' | 'agent-console' | 'settings';
 
 export type TranslationProjectStatus = 'draft' | 'running' | 'paused' | 'completed' | 'failed';
@@ -24,6 +26,13 @@ export interface TranslationWorkflowOptions {
   consistencyReview: boolean;
 }
 
+export interface TranslationExecutionPolicy {
+  softBudgetMicros: number;
+  hardBudgetMicros: number;
+  maxRetries: number;
+  maxConcurrency: number;
+}
+
 export interface TranslationProjectDraft {
   title: string;
   sourcePath: string;
@@ -32,6 +41,7 @@ export interface TranslationProjectDraft {
   workspacePath: string;
   agentCount: number;
   workflow: TranslationWorkflowOptions;
+  executionPolicy: TranslationExecutionPolicy;
 }
 
 export interface TranslationProject extends TranslationProjectDraft {
@@ -104,4 +114,9 @@ export interface TranslationSettings {
   defaultModel: string;
   defaultAgentCount: number;
   defaultWorkflow: TranslationWorkflowOptions;
+  executionPolicy: TranslationExecutionPolicy;
+  bge: {
+    source: BgeModelDownloadSource;
+    cpuFallback: boolean;
+  };
 }

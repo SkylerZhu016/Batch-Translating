@@ -1,5 +1,8 @@
+import type { TranslationQualityCapabilityProbe, TranslationQualityPolicy } from './qualityPolicy';
+
 export const TRANSLATION_PROJECT_SCHEMA_VERSION = 2 as const;
 export const TRANSLATION_PROJECT_SCHEMA_ID = 'https://moonshot.example/schemas/batch-translation-project-v2.json';
+export const TRANSLATION_RUNTIME_RECEIPT_VERSION = 1 as const;
 
 export type TranslationProjectSchemaVersion = typeof TRANSLATION_PROJECT_SCHEMA_VERSION;
 
@@ -253,6 +256,172 @@ export interface UserOverride {
   rejectionReason?: string;
 }
 
+export interface TranslationProjectQualityPolicyReceipt {
+  receiptVersion: typeof TRANSLATION_RUNTIME_RECEIPT_VERSION;
+  recordedAt: string;
+  capabilityEvidence: TranslationQualityCapabilityProbe;
+  effectiveWorkflow: WorkflowOptions;
+  policy: TranslationQualityPolicy;
+}
+
+export interface TranslationInitializationSourceReceipt {
+  sourcePath: string;
+  format: TranslationSourceKind;
+  sha256: string;
+  byteLength: number;
+  modifiedAtMs?: number;
+  copiedPath: string;
+  copiedSha256: string;
+  immutable: true;
+  verified: true;
+}
+
+export interface TranslationManifestReceipt {
+  path: string;
+  sha256: string;
+  schemaVersion: number;
+  bookId: string;
+  chapterCount: number;
+  paragraphCount: number;
+  sourceWordCount: number;
+}
+
+export interface TranslationLedgerSummaryReceipt {
+  databasePath: string;
+  schemaVersion: number;
+  journalMode: 'wal';
+  projectId: string;
+  instructionVersion: number;
+  taskCounts: Record<string, number>;
+  artifactCount: number;
+  integrityOk: boolean;
+}
+
+export interface TranslationInitializedChapterReceipt {
+  chapterId: string;
+  title?: string;
+  spineIndex: number;
+  sourcePath: string;
+  paragraphCount: number;
+  sourceHash?: string;
+}
+
+export interface TranslationInitializationReceipt {
+  receiptVersion: typeof TRANSLATION_RUNTIME_RECEIPT_VERSION;
+  initialized: true;
+  initializedAt: string;
+  sourceReceipt: TranslationInitializationSourceReceipt;
+  manifest: TranslationManifestReceipt;
+  ledgerSummary: TranslationLedgerSummaryReceipt;
+  chapters: TranslationInitializedChapterReceipt[];
+}
+
+/** Mirrors the durable ledger's explicit, non-retroactive instruction scope. */
+export interface TranslationInstructionAffectedScope {
+  affectedTaskIds: string[];
+  affectedChapterIds: string[];
+  affectedEntities: string[];
+  global: boolean;
+  reason: string;
+}
+
+export interface TranslationInstructionCostImpact {
+  actualCostMicrosDelta: number;
+  discardedCostMicros: number;
+  estimatedAdditionalCostMicros: number;
+  additionalPaidTaskCount: number;
+  reason?: string;
+}
+
+export interface TranslationInstructionReceipt {
+  receiptVersion: typeof TRANSLATION_RUNTIME_RECEIPT_VERSION;
+  eventId: string;
+  sessionMessageId: string;
+  instructionVersion: number;
+  message: string;
+  affectedScope: TranslationInstructionAffectedScope;
+  interruptMode: 'SOFT' | 'HARD';
+  appliedAt: string;
+  continuedTaskIds: string[];
+  cancelledTaskIds: string[];
+  interruptedTaskIds: string[];
+  staleTaskIds: string[];
+  replacementTaskIds: string[];
+  costImpact: TranslationInstructionCostImpact;
+}
+
+export interface TranslationCompletionIntegrityEvidence {
+  ok: boolean;
+  sqliteIntegrity: string[];
+  foreignKeyViolations: Array<Record<string, unknown>>;
+  missingArtifactFiles: string[];
+  mismatchedArtifactHashes: string[];
+  sourceHashMismatches: string[];
+}
+
+export interface TranslationFinalOutputReceipt {
+  artifactType: TranslationSourceKind;
+  path: string;
+  sourcePath: string;
+  sourceSha256: string;
+  sha256: string;
+  byteLength: number;
+  immutable: true;
+  paragraphCount: number;
+  translatedParagraphCount: number;
+  coverage: number;
+  structuralValidationPassed: boolean;
+  epubcheckStatus?: 'passed' | 'failed' | 'unavailable' | 'timed_out';
+  createdAt: string;
+}
+
+export interface TranslationCompletionVerification {
+  receiptVersion: typeof TRANSLATION_RUNTIME_RECEIPT_VERSION;
+  snapshotId: string;
+  verifiedAt: string;
+  status: 'passed' | 'failed';
+  verified: boolean;
+  complete: boolean;
+  sourceSha256: string;
+  planFingerprint: string;
+  instructionVersion: number;
+  taskCounts: Record<string, number>;
+  attemptCount: number;
+  activeArtifactCount: number;
+  staleArtifactCount: number;
+  unresolvedHighIssues: number;
+  unresolvedCriticalIssues: number;
+  unresolvedMergeConflicts: number;
+  integrity: TranslationCompletionIntegrityEvidence;
+  finalOutput?: TranslationFinalOutputReceipt;
+  blockers: string[];
+  failures: string[];
+}
+
+export interface TranslationRuntimeError {
+  phase: 'quality_probe' | 'initialization' | 'translation' | 'instruction' | 'budget' | 'completion' | 'export';
+  code: string;
+  message: string;
+  retryable: boolean;
+  occurredAt: string;
+  details?: Record<string, unknown>;
+}
+
+export interface TranslationExecutionPolicy {
+  /** Null means warning/stop thresholds are disabled explicitly, not unknown. */
+  softBudgetMicros: number | null;
+  hardBudgetMicros: number | null;
+  maxRetries: number;
+  maxConcurrency: number;
+}
+
+export interface TranslationReportReceipt {
+  path: string;
+  sha256: string;
+  generatedAt: string;
+  summary?: Record<string, unknown>;
+}
+
 export interface TranslationProject {
   schemaVersion: TranslationProjectSchemaVersion;
   projectId: string;
@@ -261,6 +430,19 @@ export interface TranslationProject {
   model?: string;
   /** Optional only for legacy projects created before the native Coordinator. */
   coordinatorLaunch?: TranslationCoordinatorLaunch;
+  /** Present only after a real BGE/RAG probe and model-policy resolution. */
+  qualityPolicy?: TranslationProjectQualityPolicyReceipt;
+  /** Durable deterministic source/manifest/ledger initialization receipt. */
+  initialization?: TranslationInitializationReceipt;
+  /** Monotonic ledger instruction version; zero before the first correction. */
+  instructionVersion: number;
+  latestInstruction?: TranslationInstructionReceipt;
+  instructionReceipts: TranslationInstructionReceipt[];
+  /** A final output is usable only when this receipt passes every integrity gate. */
+  completionVerification?: TranslationCompletionVerification;
+  reportReceipt?: TranslationReportReceipt;
+  runtimeError?: TranslationRuntimeError;
+  executionPolicy: TranslationExecutionPolicy;
   revision: number;
   createdAt: string;
   updatedAt: string;

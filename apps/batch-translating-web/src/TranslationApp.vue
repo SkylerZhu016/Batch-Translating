@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { onAuthRequired } from './api/daemon/serverAuth';
-import type { AppConfig, AppTask } from './api/types';
+import type { AppConfig, AppTask, TranslationRagStatus } from './api/types';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
 import ConfigureProviderDialog from './components/dialogs/ConfigureProviderDialog.vue';
 import EditProviderModelsDialog from './components/dialogs/EditProviderModelsDialog.vue';
@@ -24,6 +24,7 @@ import TranslationShell from './components/translation/TranslationShell.vue';
 import type {
   TranslationAgent,
   TranslationChapter,
+  TranslationExecutionPolicy,
   TranslationIssue as ViewIssue,
   TranslationOutput,
   TranslationProject as ViewProject,
@@ -35,6 +36,8 @@ import type {
   TranslationView,
   TranslationWorkflowOptions,
 } from './components/translation/types';
+import type { BgeModelSetupState } from './components/translation/bgeModelSetup.types';
+import Banner from './components/ui/Banner.vue';
 import Button from './components/ui/Button.vue';
 import EmptyState from './components/ui/EmptyState.vue';
 import Field from './components/ui/Field.vue';
@@ -56,6 +59,13 @@ import {
   TRANSLATION_MODEL_PRIORITY,
 } from './composables/useTranslationCoordinator';
 import { localeConfirmed } from './i18n';
+import { verifiedTranslationOutputPath } from './translation/project';
+import {
+  BGE_M3_MODEL_ID,
+  createTranslationQualityPolicy,
+  type TranslationQualityCapabilityProbe,
+  type TranslationQualityPolicy,
+} from './translation/qualityPolicy';
 import type {
   ChapterProgress,
   StageRunState,
@@ -103,7 +113,15 @@ onMounted(() => {
     client.clearDangerousBypassAuth();
   });
   void client.load()
-    .then(() => client.loadAllSessions())
+    .then(async () => {
+      await client.loadAllSessions();
+      await Promise.allSettled([
+        // Detection is read-only and never downloads a model. A real backend
+        // probe is required before the UI may unlock the second-review gate.
+        client.detectTranslationRag(),
+        client.refreshAllTranslationProjectRuntimes(),
+      ]);
+    })
     .catch(() => undefined);
 });
 
@@ -123,6 +141,7 @@ const createSaving = ref(false);
 const createError = ref<string | undefined>();
 const correction = ref('');
 const correctionSubmitting = ref(false);
+const correctionError = ref<string | null>(null);
 const settingsSaving = ref(false);
 const diagnosticsExporting = ref(false);
 
@@ -210,14 +229,52 @@ function defaultWorkspacePath(): string {
     ?? '';
 }
 
+function defaultExecutionPolicy(agentCount = 16): TranslationExecutionPolicy {
+  return {
+    softBudgetMicros: 20_000_000,
+    hardBudgetMicros: 30_000_000,
+    maxRetries: 2,
+    maxConcurrency: Math.min(agentCount, 16),
+  };
+}
+
+function normalizeExecutionPolicy(
+  value: Partial<TranslationExecutionPolicy> | undefined,
+  agentCount: number,
+): TranslationExecutionPolicy {
+  const fallback = defaultExecutionPolicy(agentCount);
+  const softBudgetMicros = Number.isSafeInteger(value?.softBudgetMicros)
+    && (value?.softBudgetMicros ?? -1) >= 0
+    ? value!.softBudgetMicros!
+    : fallback.softBudgetMicros;
+  const requestedHard = Number.isSafeInteger(value?.hardBudgetMicros)
+    && (value?.hardBudgetMicros ?? -1) >= 0
+    ? value!.hardBudgetMicros!
+    : fallback.hardBudgetMicros;
+  const maxRetries = Number.isSafeInteger(value?.maxRetries)
+    ? Math.min(20, Math.max(0, value!.maxRetries!))
+    : fallback.maxRetries;
+  const maxConcurrency = Number.isSafeInteger(value?.maxConcurrency)
+    ? Math.min(agentCount, Math.max(1, value!.maxConcurrency!))
+    : fallback.maxConcurrency;
+  return {
+    softBudgetMicros,
+    hardBudgetMicros: Math.max(softBudgetMicros, requestedHard),
+    maxRetries,
+    maxConcurrency,
+  };
+}
+
 function newProjectDraft(): TranslationProjectDraft {
+  const agentCount = 16;
   return {
     title: '',
     sourcePath: '',
     chapterPattern: '',
     workspacePath: defaultWorkspacePath(),
-    agentCount: 16,
+    agentCount,
     workflow: defaultWorkflow(),
+    executionPolicy: defaultExecutionPolicy(agentCount),
   };
 }
 
@@ -226,6 +283,11 @@ function loadSettings(): TranslationSettings {
     defaultModel: defaultModelId(),
     defaultAgentCount: 16,
     defaultWorkflow: defaultWorkflow(),
+    executionPolicy: defaultExecutionPolicy(),
+    bge: {
+      source: 'mirror',
+      cpuFallback: true,
+    },
   };
   if (typeof localStorage === 'undefined') return fallback;
   try {
@@ -233,13 +295,14 @@ function loadSettings(): TranslationSettings {
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<TranslationSettings>;
     const workflow = parsed.defaultWorkflow;
+    const defaultAgentCount = typeof parsed.defaultAgentCount === 'number'
+      ? Math.min(128, Math.max(2, Math.round(parsed.defaultAgentCount)))
+      : fallback.defaultAgentCount;
     return {
       defaultModel: typeof parsed.defaultModel === 'string'
         ? parsed.defaultModel
         : fallback.defaultModel,
-      defaultAgentCount: typeof parsed.defaultAgentCount === 'number'
-        ? Math.min(128, Math.max(2, Math.round(parsed.defaultAgentCount)))
-        : fallback.defaultAgentCount,
+      defaultAgentCount,
       defaultWorkflow: {
         firstTranslation: true,
         firstReview: true,
@@ -247,6 +310,11 @@ function loadSettings(): TranslationSettings {
         secondReview: workflow?.secondReview === true,
         consistencyReview: workflow?.consistencyReview === true,
       },
+      bge: {
+        source: parsed.bge?.source === 'official' ? 'official' : 'mirror',
+        cpuFallback: parsed.bge?.cpuFallback !== false,
+      },
+      executionPolicy: normalizeExecutionPolicy(parsed.executionPolicy, defaultAgentCount),
     };
   } catch {
     return fallback;
@@ -294,6 +362,86 @@ const selectedEntry = computed<ProjectSession | null>(() => {
 
 const selectedProject = computed(() => selectedEntry.value?.project ?? null);
 
+function capabilityProbeFromRagStatus(
+  status: TranslationRagStatus,
+): TranslationQualityCapabilityProbe {
+  const bgeReady = status.state === 'available'
+    && status.denseReady === true
+    && Boolean(status.fingerprint?.trim());
+  const retrievalReady = bgeReady
+    && status.serviceStatus === 'ready'
+    && status.indexReady === true
+    && status.degraded !== true;
+  return {
+    bgeM3: {
+      status: bgeReady ? 'ready' : status.state === 'failed' ? 'unhealthy' : 'missing',
+      modelId: BGE_M3_MODEL_ID,
+      ...(status.fingerprint ? { fingerprint: status.fingerprint } : {}),
+      source: status.source
+        ? 'managed-download'
+        : status.modelPath
+          ? 'local-cache'
+          : 'unknown',
+      denseAvailable: bgeReady,
+    },
+    rag: {
+      status: retrievalReady ? 'ready' : status.state === 'missing' ? 'missing' : 'unhealthy',
+      serviceReachable: status.serviceStatus === 'ready',
+      denseRetrievalAvailable: retrievalReady,
+    },
+  };
+}
+
+function qualityPolicyFor(workflow: TranslationWorkflowOptions): TranslationQualityPolicy | undefined {
+  try {
+    return createTranslationQualityPolicy({
+      capabilityProbe: capabilityProbeFromRagStatus(client.translationRagStatus.value),
+      requestedWorkflow: workflowForRunner(workflow),
+      availableModelIds: modelOptions.value.map((option) => option.value),
+    });
+  } catch {
+    // No allowed model or no trustworthy capability result: UI stays locked.
+    return undefined;
+  }
+}
+
+const createProjectQualityPolicy = computed(
+  () => qualityPolicyFor(createDraft.value.workflow),
+);
+const settingsQualityPolicy = computed(
+  () => qualityPolicyFor(settingsDraft.value.defaultWorkflow),
+);
+const bgeSetupState = computed<BgeModelSetupState>(() => {
+  const status = client.translationRagStatus.value;
+  const uiStatus: BgeModelSetupState['status'] = status.state;
+  return {
+    status: uiStatus,
+    ...(status.progress !== undefined ? { progress: status.progress } : {}),
+    ...(status.downloadedBytes !== undefined ? { downloadedBytes: status.downloadedBytes } : {}),
+    ...(status.totalBytes !== undefined ? { totalBytes: status.totalBytes } : {}),
+    ...(status.availableDiskBytes !== undefined
+      ? { diskAvailableBytes: status.availableDiskBytes }
+      : {}),
+    ...(status.requiredDiskBytes !== undefined
+      ? { diskRequiredBytes: status.requiredDiskBytes }
+      : {}),
+    ...(status.fingerprint ? { fingerprint: status.fingerprint } : {}),
+    ...(status.modelPath ? { modelPath: status.modelPath } : {}),
+    ...(status.error ? { error: status.error, errorCode: 'unknown' as const } : {}),
+    disabled: client.translationRagBusy.value,
+    canRebuild: Boolean(
+      selectedProject.value?.initialization?.manifest.bookId
+      && status.serviceStatus === 'ready'
+      && status.denseReady,
+    ),
+  };
+});
+
+const visibleCorrectionError = computed(() => correctionError.value
+  ?? (selectedProject.value?.runtimeError?.phase === 'instruction'
+    ? selectedProject.value.runtimeError.message
+    : null));
+
 const diagnosticSessionId = computed(() =>
   selectedEntry.value?.sessionId
   || client.activeSessionId.value
@@ -320,10 +468,8 @@ function toViewWorkflow(workflow: WorkflowOptions): TranslationWorkflowOptions {
   };
 }
 
-function readyOutputPath(_project: TranslationProject): string | undefined {
-  // Agent-authored artifact metadata is not an acceptance receipt. Phase 2's
-  // deterministic ledger/merger will expose a byte-verified output path.
-  return undefined;
+function readyOutputPath(project: TranslationProject): string | undefined {
+  return verifiedTranslationOutputPath(project);
 }
 
 function toViewProject(entry: ProjectSession): ViewProject {
@@ -336,6 +482,12 @@ function toViewProject(entry: ProjectSession): ViewProject {
     workspacePath: project.paths.projectRoot,
     agentCount: project.maxAgents,
     workflow: toViewWorkflow(project.workflow),
+    executionPolicy: normalizeExecutionPolicy({
+      softBudgetMicros: project.executionPolicy.softBudgetMicros ?? 20_000_000,
+      hardBudgetMicros: project.executionPolicy.hardBudgetMicros ?? 30_000_000,
+      maxRetries: project.executionPolicy.maxRetries,
+      maxConcurrency: project.executionPolicy.maxConcurrency,
+    }, project.maxAgents),
     status: project.status === 'ready' ? 'draft' : project.status,
     completedChapters: project.chapters.filter((chapter) => chapter.status === 'completed').length,
     totalChapters: project.chapters.length,
@@ -510,7 +662,7 @@ const outputs = computed<TranslationOutput[]>(() => projectSessions.value.flatMa
   const artifact = entry.project.artifacts.find(
     (item) => (item.type === 'final_epub' || item.type === 'final_txt') && item.status === 'ready',
   );
-  return [{
+  const result: TranslationOutput[] = [{
     id: artifact?.artifactId ?? `${entry.sessionId}:final-output`,
     projectId: entry.sessionId,
     projectTitle: entry.project.name,
@@ -518,6 +670,17 @@ const outputs = computed<TranslationOutput[]>(() => projectSessions.value.flatMa
     outputPath: path,
     exportedAt: formatDate(artifact?.createdAt ?? entry.project.updatedAt),
   }];
+  if (entry.project.reportReceipt) {
+    result.push({
+      id: `${entry.sessionId}:technical-report`,
+      projectId: entry.sessionId,
+      projectTitle: `${entry.project.name} · ${t('translation.outputs.technicalReport')}`,
+      sourcePath: entry.project.source.sourcePath,
+      outputPath: entry.project.reportReceipt.path,
+      exportedAt: formatDate(entry.project.reportReceipt.generatedAt),
+    });
+  }
+  return result;
 }));
 
 const openIssueCount = computed(() => issues.value.length);
@@ -526,10 +689,12 @@ const anyProjectRunning = computed(() => projectSessions.value.some(
 ));
 
 function openCreateDialog(): void {
+  const agentCount = settingsDraft.value.defaultAgentCount;
   createDraft.value = {
     ...newProjectDraft(),
-    agentCount: settingsDraft.value.defaultAgentCount,
+    agentCount,
     workflow: { ...settingsDraft.value.defaultWorkflow },
+    executionPolicy: normalizeExecutionPolicy(settingsDraft.value.executionPolicy, agentCount),
   };
   selectedSourceFile.value = null;
   createError.value = undefined;
@@ -571,6 +736,19 @@ async function createProject(): Promise<void> {
     )
       ? settingsDraft.value.defaultModel
       : modelOptions.value[0]?.value;
+    const qualityPolicy = createProjectQualityPolicy.value;
+    const requestedWorkflow = workflowForRunner(createDraft.value.workflow);
+    const workflow = qualityPolicy?.effectiveWorkflow ?? {
+      ...requestedWorkflow,
+      // Unknown/unreachable probes are never allowed to weaken the quality gate.
+      secondReview: true,
+    };
+    if (workflow.secondReview && !createDraft.value.workflow.secondReview) {
+      createDraft.value = {
+        ...createDraft.value,
+        workflow: { ...createDraft.value.workflow, secondReview: true },
+      };
+    }
     const project = await runner.createTranslationProject({
       name: createDraft.value.title.trim() || createDraft.value.sourcePath.replace(/\.(epub|txt)$/i, ''),
       sourceFile: selectedSourceFile.value ?? undefined,
@@ -579,8 +757,12 @@ async function createProject(): Promise<void> {
       projectRoot: createDraft.value.workspacePath,
       workspaceId: workspace?.id,
       model: selectedModel || undefined,
-      workflow: workflowForRunner(createDraft.value.workflow),
+      workflow,
       maxAgents: createDraft.value.agentCount,
+      executionPolicy: normalizeExecutionPolicy(
+        createDraft.value.executionPolicy,
+        createDraft.value.agentCount,
+      ),
     });
     const entry = runner.translationProjectSessions.value.find(
       (candidate) => candidate.project.projectId === project.projectId,
@@ -668,9 +850,14 @@ async function sendCorrection(): Promise<void> {
   const text = correction.value.trim();
   if (!entry || !text || correctionSubmitting.value) return;
   correctionSubmitting.value = true;
+  correctionError.value = null;
   try {
     await runner.applyUserOverride(entry.sessionId, { text });
     correction.value = '';
+  } catch (error) {
+    correctionError.value = error instanceof Error
+      ? error.message
+      : (t('translation.create.failed') || 'Correction was not recorded.');
   } finally {
     correctionSubmitting.value = false;
   }
@@ -720,9 +907,46 @@ function closeWorkspacePicker(): void {
   showWorkspacePicker.value = false;
 }
 
+function runBgeAction(action: () => Promise<unknown>): void {
+  void action().catch(() => undefined);
+}
+
+function detectBge(): void {
+  runBgeAction(() => client.detectTranslationRag());
+}
+
+function downloadBge(): void {
+  runBgeAction(() => client.downloadTranslationRag(
+    settingsDraft.value.bge.source,
+    settingsDraft.value.bge.cpuFallback,
+  ));
+}
+
+function cancelBgeDownload(): void {
+  runBgeAction(() => client.cancelTranslationRagDownload());
+}
+
+function verifyBge(): void {
+  runBgeAction(() => client.verifyTranslationRag(settingsDraft.value.bge.cpuFallback));
+}
+
+function rebuildBgeIndex(): void {
+  runBgeAction(() => client.rebuildTranslationRagIndex());
+}
+
+function openBgeSettings(): void {
+  showCreateProject.value = false;
+  activeView.value = 'settings';
+  detectBge();
+}
+
 async function saveSettings(): Promise<void> {
   settingsSaving.value = true;
   try {
+    const defaultAgentCount = Math.min(
+      128,
+      Math.max(2, Math.round(settingsDraft.value.defaultAgentCount)),
+    );
     const normalized: TranslationSettings = {
       ...settingsDraft.value,
       defaultModel: modelOptions.value.some(
@@ -730,12 +954,21 @@ async function saveSettings(): Promise<void> {
       )
         ? settingsDraft.value.defaultModel
         : (modelOptions.value[0]?.value ?? ''),
-      defaultAgentCount: Math.min(128, Math.max(2, Math.round(settingsDraft.value.defaultAgentCount))),
+      defaultAgentCount,
       defaultWorkflow: {
         ...settingsDraft.value.defaultWorkflow,
         firstTranslation: true,
         firstReview: true,
+        secondReview: settingsQualityPolicy.value?.effectiveWorkflow.secondReview ?? true,
       },
+      bge: {
+        source: settingsDraft.value.bge.source === 'official' ? 'official' : 'mirror',
+        cpuFallback: settingsDraft.value.bge.cpuFallback !== false,
+      },
+      executionPolicy: normalizeExecutionPolicy(
+        settingsDraft.value.executionPolicy,
+        defaultAgentCount,
+      ),
     };
     settingsDraft.value = normalized;
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(normalized));
@@ -935,17 +1168,28 @@ function setUiFont(value: string): void {
         @open-output="openProjectOutput"
       />
 
-      <TranslationRunWorkbench
+      <div
         v-else-if="activeView === 'run' && selectedViewProject"
-        :project="selectedViewProject"
-        :stages="stages"
-        :agents="agents"
-        :chapters="chapters"
-        :paused="selectedProject?.status !== 'running'"
-        @toggle-pause="togglePause"
-        @open-issue-log="activeView = 'issues'"
-        @open-output="activeView = 'outputs'"
-      />
+        class="translation-run-surface"
+      >
+        <Banner
+          v-if="selectedProject?.runtimeError"
+          variant="danger"
+          class="translation-run-surface__error"
+        >
+          {{ selectedProject.runtimeError.message }}
+        </Banner>
+        <TranslationRunWorkbench
+          :project="selectedViewProject"
+          :stages="stages"
+          :agents="agents"
+          :chapters="chapters"
+          :paused="selectedProject?.status !== 'running'"
+          @toggle-pause="togglePause"
+          @open-issue-log="activeView = 'issues'"
+          @open-output="activeView = 'outputs'"
+        />
+      </div>
 
       <EmptyState
         v-else-if="activeView === 'run'"
@@ -965,15 +1209,19 @@ function setUiFont(value: string): void {
         @open-project="selectProject($event, 'run')"
       />
 
-      <AgentConsole
-        v-else-if="activeView === 'agent-console'"
-        :messages="selectedEntry ? client.messagesForSession(selectedEntry.sessionId) : []"
-        :running="selectedProject?.status === 'running'"
-        :command-value="correction"
-        :busy="correctionSubmitting"
-        @update:command-value="correction = $event"
-        @send="sendCorrection"
-      />
+      <div v-else-if="activeView === 'agent-console'" class="translation-agent-console">
+        <Banner v-if="visibleCorrectionError" variant="danger" class="translation-agent-console__error">
+          {{ visibleCorrectionError }}
+        </Banner>
+        <AgentConsole
+          :messages="selectedEntry ? client.messagesForSession(selectedEntry.sessionId) : []"
+          :running="selectedProject?.status === 'running'"
+          :command-value="correction"
+          :busy="correctionSubmitting"
+          @update:command-value="correction = $event; correctionError = null"
+          @send="sendCorrection"
+        />
+      </div>
 
       <TranslationOutputsView
         v-else-if="activeView === 'outputs'"
@@ -987,8 +1235,16 @@ function setUiFont(value: string): void {
         v-model="settingsDraft"
         :models="modelOptions"
         :saving="settingsSaving"
+        :bge-state="bgeSetupState"
+        :quality-policy="settingsQualityPolicy"
         @manage-models="openProviders"
         @save="saveSettings"
+        @bge-detect="detectBge"
+        @bge-download="downloadBge"
+        @bge-cancel="cancelBgeDownload"
+        @bge-retry="downloadBge"
+        @bge-verify="verifyBge"
+        @bge-rebuild="rebuildBgeIndex"
       >
         <template #appearance>
           <section class="translation-appearance">
@@ -1053,9 +1309,11 @@ function setUiFont(value: string): void {
       v-model="createDraft"
       :saving="createSaving"
       :error="createError"
+      :quality-policy="createProjectQualityPolicy"
       @source-file="onSourceFile"
       @source-path="onSourcePath"
       @choose-workspace="chooseWorkspace"
+      @setup-bge="openBgeSettings"
       @create="createProject"
     />
 
@@ -1184,6 +1442,34 @@ function setUiFont(value: string): void {
 
 .translation-empty {
   height: 100%;
+}
+
+.translation-run-surface {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+}
+
+.translation-run-surface__error {
+  position: absolute;
+  z-index: 1;
+  top: var(--space-3);
+  right: var(--space-4);
+  left: var(--space-4);
+}
+
+.translation-agent-console {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+}
+
+.translation-agent-console__error {
+  position: absolute;
+  z-index: 1;
+  top: var(--space-3);
+  right: var(--space-4);
+  left: var(--space-4);
 }
 
 .translation-appearance {

@@ -20,6 +20,8 @@ export const fileMetaSchema = z.object({
   name: z.string().min(1),
   media_type: z.string().min(1),
   size: z.number().int().nonnegative(),
+  /** Present for uploads created by hash-aware servers; absent on legacy metadata. */
+  sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   created_at: isoDateTimeSchema,
   expires_at: isoDateTimeSchema.optional(),
 });

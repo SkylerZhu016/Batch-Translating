@@ -497,8 +497,167 @@ export interface WireFileMeta {
   name: string;
   media_type: string;
   size: number;
+  sha256?: string;
   created_at: string;
   expires_at?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Translation runtime wire DTOs
+// ---------------------------------------------------------------------------
+
+export type WireTranslationRuntimeRecord = Record<string, unknown>;
+
+export interface WireTranslationInitializeRequest {
+  project: unknown;
+  source_file_id: string;
+}
+
+export interface WireTranslationInitializeResult {
+  project_id: string;
+  manifest: WireTranslationRuntimeRecord;
+  manifest_path?: string;
+  manifest_sha256?: string;
+  ledger_summary: WireTranslationRuntimeRecord;
+  database_path?: string;
+  integrity_ok?: boolean;
+  initialized_at?: string;
+  chapters: WireTranslationRuntimeRecord[];
+  source_receipt: WireTranslationRuntimeRecord;
+  quality_capability?: WireTranslationRuntimeRecord;
+}
+
+export interface WireTranslationRuntimeStatus {
+  project_id: string;
+  status: string;
+  ledger_summary: WireTranslationRuntimeRecord;
+  manifest?: WireTranslationRuntimeRecord;
+  chapters?: WireTranslationRuntimeRecord[];
+  source_receipt?: WireTranslationRuntimeRecord;
+  latest_instruction?: WireTranslationRuntimeRecord;
+  completion_receipt?: WireTranslationRuntimeRecord;
+  final_output?: WireTranslationRuntimeRecord;
+  report_receipt?: WireTranslationRuntimeRecord;
+  budget?: WireTranslationRuntimeRecord;
+  integrity?: WireTranslationRuntimeRecord;
+  quality_capability?: WireTranslationRuntimeRecord;
+  warnings?: string[];
+  error?: string;
+}
+
+export interface WireTranslationAffectedScope {
+  affected_task_ids: string[];
+  affected_chapter_ids: string[];
+  affected_entities: string[];
+  global: boolean;
+  reason: string;
+}
+
+export interface WireTranslationInstructionRequest {
+  project_root: string;
+  session_message_id: string;
+  message: string;
+  affected_scope: WireTranslationAffectedScope;
+  interrupt_mode?: 'SOFT' | 'HARD';
+}
+
+export interface WireTranslationInstructionReceipt {
+  instruction_version: number;
+  affected_scope: WireTranslationAffectedScope;
+  stale_task_ids: string[];
+  cancelled_task_ids: string[];
+  continued_task_ids: string[];
+  interrupted_task_ids?: string[];
+  replacement_task_ids?: string[];
+  cost_impact?: WireTranslationRuntimeRecord;
+  accepted_at: string;
+}
+
+export interface WireTranslationCompletionRequest {
+  project_root: string;
+  final_artifact?: WireTranslationRuntimeRecord;
+  final_artifact_ids?: string[];
+  final_task_types?: string[];
+  required_task_types?: string[];
+}
+
+export interface WireTranslationCompletionVerification {
+  verified: boolean;
+  receipt?: WireTranslationRuntimeRecord;
+  final_output?: WireTranslationRuntimeRecord;
+  failures: string[];
+}
+
+export interface WireTranslationReportRequest {
+  project_root: string;
+  output_path?: string;
+  final_artifact?: WireTranslationRuntimeRecord;
+  translations?: WireTranslationRuntimeRecord[];
+  final_task_types?: string[];
+  required_task_types?: string[];
+}
+
+export interface WireTranslationReportResult {
+  path: string;
+  sha256: string;
+  generated_at: string;
+  summary?: WireTranslationRuntimeRecord;
+}
+
+export type WireTranslationRagState =
+  | 'detected'
+  | 'missing'
+  | 'downloading'
+  | 'verifying'
+  | 'available'
+  | 'failed';
+
+export type WireTranslationRagSource = 'mirror' | 'official';
+export type WireTranslationRagServiceStatus = 'starting' | 'ready' | 'degraded' | 'unavailable';
+
+export interface WireTranslationRagStatus {
+  status: WireTranslationRagState;
+  service_status: WireTranslationRagServiceStatus;
+  source?: WireTranslationRagSource;
+  progress?: number;
+  downloaded_bytes?: number;
+  total_bytes?: number;
+  required_disk_bytes?: number;
+  available_disk_bytes?: number;
+  model_path?: string;
+  fingerprint?: string;
+  cpu_fallback: boolean;
+  degraded: boolean;
+  dense_ready: boolean;
+  index_ready: boolean;
+  points: number;
+  error?: string;
+}
+
+export interface WireTranslationRagDetectRequest {
+  verify_hashes?: boolean;
+}
+
+export interface WireTranslationRagDownloadRequest {
+  source?: WireTranslationRagSource;
+  revision?: string;
+  destination?: string;
+  cpu_fallback?: boolean;
+}
+
+export interface WireTranslationRagVerifyRequest {
+  project_id?: string;
+  project_root?: string;
+  book_id?: string;
+  cpu_fallback?: boolean;
+}
+
+export interface WireTranslationRagRebuildRequest {
+  project_id: string;
+  project_root: string;
+  book_id: string;
+  indexes?: string[];
+  force?: boolean;
 }
 
 // ---------------------------------------------------------------------------
