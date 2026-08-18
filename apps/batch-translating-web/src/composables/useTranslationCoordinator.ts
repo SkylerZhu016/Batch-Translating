@@ -1,5 +1,10 @@
 import { computed, reactive, ref, type ComputedRef } from 'vue';
-import type { AppGoal, AppSession } from '../api/types';
+import type {
+  AppGoal,
+  AppSession,
+  TranslationInitializeResult,
+  TranslationRuntimeStatus,
+} from '../api/types';
 import {
   buildCoordinatorQualityPolicyEnvelope,
   createTranslationProject as createProjectMetadata,
@@ -147,11 +152,11 @@ export interface TranslationCoordinatorHost {
   initializeTranslationProject(input: {
     project: TranslationProject;
     sourceFileId: string;
-  }): Promise<TranslationInstructionRuntimeAck>;
+  }): Promise<TranslationInitializeResult>;
   getTranslationProjectStatus(input: {
     projectId: string;
     projectRoot: string;
-  }): Promise<unknown>;
+  }): Promise<TranslationRuntimeStatus>;
   recordTranslationInstruction(input: {
     projectId: string;
     projectRoot: string;
@@ -165,7 +170,7 @@ export interface TranslationCoordinatorHost {
       reason: string;
     };
     interruptMode?: 'SOFT' | 'HARD';
-  }): Promise<unknown>;
+  }): Promise<TranslationInstructionRuntimeAck>;
   verifyTranslationCompletion(input: {
     projectId: string;
     projectRoot: string;
@@ -508,7 +513,9 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
     const entry = findProjectSession(sessionId);
     let project = sourceProject ?? entry.project;
     const storedModel = project.model?.trim();
-    let candidate = storedModel || preferredModel?.trim() || entry.session.model?.trim();
+    let candidate: string | undefined = (
+      storedModel || preferredModel?.trim() || entry.session.model?.trim()
+    );
     if (!candidate) candidate = (await host.loadSessionModel(sessionId))?.trim();
     const pinnedModel = requireAllowedTranslationModel(candidate);
 
@@ -607,10 +614,9 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
     }
     const status: TranslationProject['status'] = goal.status === 'active' ? 'running' : 'paused';
     const completionRejected = false;
-    if (
-      status !== 'completed'
-      && (current.project.status === 'failed' || current.project.status === 'completed')
-    ) return { project: current.project, completionRejected };
+    if (current.project.status === 'failed' || current.project.status === 'completed') {
+      return { project: current.project, completionRejected };
+    }
     return {
       project: await setProjectStatus(sessionId, status),
       completionRejected,
@@ -844,7 +850,7 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
         throw new Error('Translation Coordinator goal prompt was rejected');
       }
 
-      let recoveredGoal = goal;
+      let recoveredGoal: AppGoal | null = goal;
       if (outcome === 'terminal') {
         try {
           recoveredGoal = await host.getSessionGoal(sessionId);

@@ -1514,7 +1514,7 @@ function unwrapFinalArtifactReceipt(value: unknown): unknown {
   if (!isRecord(value)) return value;
   if (value['schema_version'] === 1 && value['immutable'] === true) return value;
   for (const key of ['final_artifact', 'finalArtifact', 'receipt', 'data']) {
-    const nested = value[key];
+    const nested: unknown = value[key];
     if (isRecord(nested) && nested !== value) {
       const candidate = unwrapFinalArtifactReceipt(nested);
       if (isFinalArtifactReceipt(candidate)) return candidate;

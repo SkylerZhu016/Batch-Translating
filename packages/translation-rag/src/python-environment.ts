@@ -232,7 +232,9 @@ async function runCommand(
       emitChunks('stderr', text);
     });
 
-    const abort = (): void => child.kill('SIGTERM');
+    const abort = (): void => {
+      child.kill('SIGTERM');
+    };
     signal?.addEventListener('abort', abort, { once: true });
     child.once('error', (error) => {
       if (settled) return;

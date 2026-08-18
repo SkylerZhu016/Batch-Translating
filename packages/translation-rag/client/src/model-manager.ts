@@ -385,7 +385,7 @@ async function collectCandidateDirectories(
     env['LOCALAPPDATA'] ? join(env['LOCALAPPDATA'], 'huggingface', 'hub') : undefined,
   ].filter((path): path is string => Boolean(path));
 
-  const all = [...direct];
+  const all: { path: string; source: DiscoveredModel['source'] }[] = [...direct];
   for (const root of cacheRoots) {
     signal?.throwIfAborted();
     const expanded = await expandCacheRoot(root);

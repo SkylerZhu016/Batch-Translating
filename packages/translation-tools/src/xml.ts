@@ -27,7 +27,7 @@ export function parseXml(markup: string, label: string): DomDocument {
     throw new Error(`${label} has no document element`);
   }
   const parserErrors = descendants(document.documentElement).filter(
-    (node): node is DomElement => node.nodeType === 1 && localName(node) === 'parsererror',
+    (node): node is DomElement => node.nodeType === 1 && localName(node as DomElement) === 'parsererror',
   );
   if (parserErrors.length > 0) {
     throw new Error(`${label} is not well-formed XML: ${parserErrors[0]?.textContent ?? 'parser error'}`);
@@ -79,7 +79,7 @@ export function nodePath(root: DomNode, node: DomNode): number[] {
   const reversed: number[] = [];
   let current: DomNode | null = node;
   while (current && current !== root) {
-    const parent = current.parentNode;
+    const parent: DomNode | null = current.parentNode;
     if (!parent) throw new Error('Node is not a descendant of the requested root');
     const index = childNodes(parent).indexOf(current);
     if (index < 0) throw new Error('DOM child relationship is inconsistent');

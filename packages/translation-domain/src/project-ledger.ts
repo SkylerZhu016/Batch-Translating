@@ -917,7 +917,9 @@ export class TranslationProjectLedger {
 
   completeAttempt<T>(input: CompleteAttemptInput<T>): ArtifactRecord {
     for (const sourceHash of input.sourceHashes) assertHash('sourceHash', sourceHash);
-    const prepared = this.database.transaction(() => {
+    const prepared = this.database.transaction<
+      { task: TaskRecord; existing: ArtifactRecord } | { task: TaskRecord; attempt: TaskAttemptRecord }
+    >(() => {
       const knownTask = this.getTask(input.taskId);
       const knownArtifact = this.getArtifactByAttempt(input.taskId, input.attemptId);
       if (knownTask?.state === 'SUCCEEDED' && knownArtifact) return { task: knownTask, existing: knownArtifact };
