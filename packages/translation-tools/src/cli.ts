@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { readFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
 
 import { detectSourceFormat } from './hash.js';
 import { writeImmutableJson } from './immutable.js';
@@ -15,11 +14,13 @@ import { validateEpubStructure } from './epub/validate.js';
 export interface TranslationToolsCliIo {
   readonly stdout: (line: string) => void;
   readonly stderr: (line: string) => void;
+  readonly stdin?: () => Promise<string>;
 }
 
 const PROCESS_IO: TranslationToolsCliIo = {
   stdout: (line) => process.stdout.write(line),
   stderr: (line) => process.stderr.write(line),
+  stdin: readProcessStdin,
 };
 
 export async function runTranslationToolsCli(args: string[], io: TranslationToolsCliIo = PROCESS_IO): Promise<number> {
@@ -82,7 +83,7 @@ async function copySourceCommand(args: string[], io: TranslationToolsCliIo): Pro
 async function mergeCommand(args: string[], io: TranslationToolsCliIo): Promise<number> {
   const inputPath = option(args, '--input', true);
   const outputPath = option(args, '--out', true);
-  const input = await readJson<MergeInput>(inputPath);
+  const input = await readJson<MergeInput>(inputPath, io);
   const result = mergeTranslationArtifacts(input);
   await writeImmutableJson(outputPath, result);
   printJson(io, result.receipt);
@@ -91,7 +92,7 @@ async function mergeCommand(args: string[], io: TranslationToolsCliIo): Promise<
 
 async function renderCommand(args: string[], io: TranslationToolsCliIo): Promise<number> {
   const inputPath = option(args, '--input', true);
-  const input = await readJson<RenderSourceOptions>(inputPath);
+  const input = await readJson<RenderSourceOptions>(inputPath, io);
   const outputOverride = option(args, '--out', false);
   const receiptPath = option(args, '--receipt', false);
   const receipt = await renderTranslationSource({
@@ -119,7 +120,7 @@ async function validateCommand(args: string[], io: TranslationToolsCliIo): Promi
 async function reportCommand(args: string[], io: TranslationToolsCliIo): Promise<number> {
   const inputPath = option(args, '--input', true);
   const outputPath = option(args, '--out', true);
-  const input = await readJson<DeterministicReportInput>(inputPath);
+  const input = await readJson<DeterministicReportInput>(inputPath, io);
   const receipt = await writeDeterministicReport(outputPath, input);
   printJson(io, receipt);
   return 0;
@@ -149,13 +150,26 @@ async function validateTxt(sourcePath: string): Promise<{
   }
 }
 
-async function readJson<T>(path: string): Promise<T> {
-  const source = await readFile(path, 'utf8');
+async function readJson<T>(path: string, io: TranslationToolsCliIo): Promise<T> {
+  const source = path === '-' ? await readInjectedStdin(io) : await readFile(path, 'utf8');
   try {
     return JSON.parse(source) as T;
   } catch (error) {
     throw new Error(`Invalid JSON input ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+async function readInjectedStdin(io: TranslationToolsCliIo): Promise<string> {
+  if (!io.stdin) throw new Error('--input - requires an injected stdin reader');
+  return await io.stdin();
+}
+
+async function readProcessStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function positional(args: string[], index: number, message: string): string {
@@ -190,9 +204,4 @@ function usage(): string {
     '  report --input <report-input.json> --out <report.md>',
     '',
   ].join('\n');
-}
-
-const invokedPath = process.argv[1];
-if (invokedPath && pathToFileURL(invokedPath).href === import.meta.url) {
-  process.exitCode = await runTranslationToolsCli(process.argv.slice(2));
 }

@@ -19,10 +19,10 @@
     }
   },
   "bin": {
-    "batch-translation-tools": "./dist/cli.js"
+    "batch-translation-tools": "./dist/bin.js"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/cli.ts",
+    "build": "tsdown src/index.ts src/cli.ts src/bin.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist"
