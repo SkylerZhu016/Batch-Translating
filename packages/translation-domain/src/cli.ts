@@ -96,6 +96,66 @@ function help(): Record<string, unknown> {
       'index record',
       'merge acquire|renew|release|validate',
     ],
+    contracts: {
+      'task ensure': {
+        required: ['projectId', 'taskType', 'scopeHash', 'scope', 'promptVersion', 'instructionVersion', 'contextHash', 'modelId', 'decodingConfigHash'],
+        optional: ['taskId', 'priority', 'dependencyIds', 'costClass=PAID|LOCAL', 'stage', 'maxAttempts'],
+      },
+      'task claim': {
+        required: ['projectId', 'workerId', 'leaseDurationMs'],
+        optional: ['taskTypes'],
+      },
+      'task start': { required: ['taskId', 'attemptId', 'workerId'] },
+      'task complete': {
+        required: ['projectId', 'taskId', 'attemptId', 'workerId', 'sourceHashes', 'payload', 'provenance'],
+        provenanceRequired: ['providerId', 'modelId', 'promptVersion', 'instructionVersion', 'contextHash', 'sourceHashes'],
+      },
+      'task fail': {
+        required: ['taskId', 'attemptId', 'workerId', 'errorCode', 'errorMessage', 'retryable'],
+        optional: ['retryReason'],
+      },
+      'instruction apply': {
+        required: ['projectId', 'sessionMessageId', 'message', 'affectedScope'],
+        affectedScopeRequired: ['affectedTaskIds', 'affectedChapterIds', 'affectedEntities', 'global', 'reason'],
+        optional: ['eventId', 'interruptMode=SOFT|HARD', 'replacementTasks'],
+      },
+      'cost record-usage': {
+        required: ['projectId', 'eventId', 'sessionId', 'agentId', 'turnId', 'step', 'modelId', 'providerId', 'inputTokens', 'outputTokens', 'priceSnapshot', 'actualCostMicros'],
+        optional: ['traceId', 'reasoningTokens', 'cachedTokens', 'latencyMs', 'stage', 'retryReason'],
+      },
+      'memory record': {
+        required: ['projectId', 'memoryType', 'summary', 'importance', 'confidence', 'sourceProvenance', 'instructionVersion'],
+        optional: ['memoryId', 'chapterId', 'paragraphIds', 'entities'],
+      },
+      'canonical record': {
+        required: ['projectId', 'entityKey', 'entityType', 'canonicalValue', 'sourceProvenance', 'instructionVersion'],
+        optional: ['canonicalRecordId', 'aliases'],
+      },
+      'tm record': {
+        required: ['projectId', 'sourceHash', 'targetText', 'approval=APPROVED|FINAL', 'providerId', 'modelId', 'promptVersion', 'instructionVersion', 'provenance'],
+        optional: ['tmRecordId', 'paragraphId'],
+      },
+      'review issue': {
+        required: ['projectId', 'category', 'severity=LOW|MEDIUM|HIGH|CRITICAL', 'explanation', 'suggestedAction', 'instructionVersion'],
+        optional: ['issueId', 'taskId', 'chapterId', 'paragraphIds', 'sourceEvidenceIds', 'targetEvidenceIds', 'storyMemoryIds'],
+      },
+      'repair patch': {
+        required: ['projectId', 'issueId', 'paragraphId', 'oldTranslationHash', 'newTranslation', 'reason', 'instructionVersion', 'provenance'],
+        optional: ['patchId', 'taskId'],
+      },
+      'conflict create': {
+        required: ['conflict', 'mergerLease'],
+        conflictRequired: ['projectId', 'paragraphId', 'patchIds', 'baseTranslationHash', 'instructionVersion'],
+      },
+      'index record': {
+        required: ['projectId', 'indexKind', 'schemaFingerprint', 'modelFingerprint', 'state=STAGING|CURRENT|DEGRADED|STALE|FAILED'],
+        optional: ['indexVersionId', 'pointCount', 'metadata'],
+      },
+      'merge acquire': { required: ['projectId', 'owner', 'leaseDurationMs'] },
+      'merge renew': { required: ['lease', 'leaseDurationMs'] },
+      'merge release': { payload: 'MergerLeaseToken itself: projectId, owner, generation, expiresAt' },
+      'merge validate': { required: ['artifactId', 'projectId', 'expectedInstructionVersion'], optional: ['expectedPromptVersion', 'expectedContextHash', 'expectedSourceHashes', 'expectedParagraphIds', 'expectedOldTranslationHashes'] },
+    },
   };
 }
 

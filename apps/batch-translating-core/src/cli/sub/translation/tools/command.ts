@@ -23,6 +23,13 @@ export function registerTranslationToolsCommand(
     .description('确定性解析、合并、渲染与校验 / Deterministic source tools.');
 
   tools
+    .command('contracts')
+    .description('输出机器可读的 merge/render/report 输入契约 / Print machine-readable input contracts.')
+    .action(async () => {
+      await runTools(output, ['help']);
+    });
+
+  tools
     .command('parse')
     .description('解析 EPUB/TXT 并写出稳定清单 / Parse a source into a stable manifest.')
     .argument('<source>', '源 EPUB/TXT / Source EPUB or TXT.')

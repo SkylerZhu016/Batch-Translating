@@ -43,7 +43,7 @@ export async function runTranslationToolsCli(args: string[], io: TranslationTool
       case '--help':
       case '-h':
       case undefined:
-        printJson(io, { usage: usage() });
+        printJson(io, { usage: usage(), contracts: contracts() });
         return 0;
       default:
         throw new Error(`Unknown translation-tools command: ${command}`);
@@ -204,4 +204,26 @@ function usage(): string {
     '  report --input <report-input.json> --out <report.md>',
     '',
   ].join('\n');
+}
+
+function contracts(): Record<string, unknown> {
+  return {
+    merge: {
+      gate: ['project_id', 'source_hashes', 'prompt_version', 'prompt_fingerprint', 'instruction_version', 'context_hash', 'model_id', 'model_fingerprint', 'paragraph_ids', 'require_complete_coverage?'],
+      tasks: ['task_id', 'project_id', 'state', 'prompt_version', 'prompt_fingerprint', 'instruction_version', 'context_hash', 'model_id', 'model_fingerprint', 'source_hashes'],
+      artifacts: ['artifact_id', 'project_id', 'task_id', 'attempt_id', 'schema_version', 'source_hashes', 'prompt_version', 'prompt_fingerprint', 'instruction_version', 'context_hash', 'model_id', 'model_fingerprint', 'created_at', 'payload', 'payload_hash', 'stale?'],
+      translation_payload: { kind: 'translation', records: ['paragraph_id', 'translation', 'segment_translations?'] },
+      repair_payload: { kind: 'repair|arbitration', patches: ['issue_id', 'paragraph_id', 'old_translation', 'old_translation_hash', 'new_translation', 'reason', 'segment_translations?', 'conflict_set?'] },
+    },
+    render: {
+      required: ['source_path', 'output_path', 'manifest', 'translations', 'provenance'],
+      translation: ['paragraph_id', 'translation', 'segment_translations?'],
+      provenance: ['project_id', 'instruction_version', 'prompt_fingerprint', 'context_hash', 'model_fingerprint', 'merge_receipt_hash'],
+      optional: ['require_complete_coverage', 'epubcheck_path', 'require_epubcheck'],
+    },
+    report: {
+      required: ['snapshot_as_of', 'manifest', 'translations', 'memory_records', 'rag_configuration', 'tasks', 'attempts', 'issues', 'patches', 'conflicts', 'costs', 'final_artifact'],
+      note: 'Prefer the authenticated translation project report API, which derives these rows from SQLite, instead of composing statistics manually.',
+    },
+  };
 }

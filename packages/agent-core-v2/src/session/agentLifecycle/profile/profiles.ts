@@ -18,6 +18,7 @@ import {
 import EXPLORE_ROLE from './explore-overlay.md?raw';
 import SUMMARY_CONTINUATION_PROMPT from './summary-continuation.md?raw';
 import TRANSLATION_CONFLICT_ARBITRATOR_ROLE from './translation-conflict-arbitrator.md?raw';
+import TRANSLATION_COORDINATOR_RUNBOOK from './translation-coordinator-runbook.md?raw';
 import TRANSLATION_CONSISTENCY_AUDITOR_ROLE from './translation-consistency-auditor.md?raw';
 import TRANSLATION_MEMORY_CONSOLIDATOR_ROLE from './translation-memory-consolidator.md?raw';
 import TRANSLATION_MEMORY_EXTRACTOR_ROLE from './translation-memory-extractor.md?raw';
@@ -145,6 +146,7 @@ const TRANSLATION_COORDINATOR_ROLE = [
   'Keep the provider and model pinned by the project. Never browse the web, call MCP, or silently switch models. Shared translation state is published only by deterministic ledger and merge tools after version, hash, and quality-gate validation.',
   'Never silently merge an artifact produced for stale source, context, prompt, or instruction versions. Never claim a quality gate passed when its evidence or required capability is missing.',
   'Do not replace the durable ledger with a fixed prompt-stage script. Use the available tools and subagents according to the current goal and ledger state, and report a genuine blocked state when safe progress is impossible.',
+  TRANSLATION_COORDINATOR_RUNBOOK,
 ].join('\n\n');
 
 const translationWorkerRole = (role: string): string =>
