@@ -17,6 +17,16 @@ import {
 
 import EXPLORE_ROLE from './explore-overlay.md?raw';
 import SUMMARY_CONTINUATION_PROMPT from './summary-continuation.md?raw';
+import TRANSLATION_CONFLICT_ARBITRATOR_ROLE from './translation-conflict-arbitrator.md?raw';
+import TRANSLATION_CONSISTENCY_AUDITOR_ROLE from './translation-consistency-auditor.md?raw';
+import TRANSLATION_MEMORY_CONSOLIDATOR_ROLE from './translation-memory-consolidator.md?raw';
+import TRANSLATION_MEMORY_EXTRACTOR_ROLE from './translation-memory-extractor.md?raw';
+import TRANSLATION_REPAIRER_ROLE from './translation-repairer.md?raw';
+import TRANSLATION_REVIEWER_CONTINUITY_ROLE from './translation-reviewer-continuity.md?raw';
+import TRANSLATION_REVIEWER_FIDELITY_ROLE from './translation-reviewer-fidelity.md?raw';
+import TRANSLATION_REVIEWER_NATURALNESS_ROLE from './translation-reviewer-naturalness.md?raw';
+import TRANSLATION_TRANSLATOR_ROLE from './translation-translator.md?raw';
+import TRANSLATION_WORKER_SHARED from './translation-worker-shared.md?raw';
 
 const AGENT_TOOLS = [
   'Read',
@@ -83,6 +93,34 @@ const EXPLORE_TOOLS = [
   'FetchURL',
 ] as const;
 
+const TRANSLATION_COORDINATOR_TOOLS = [
+  'Read',
+  'Write',
+  'Bash',
+  'TaskList',
+  'TaskOutput',
+  'TaskStop',
+  'Agent',
+  'AgentSwarm',
+  'AskUserQuestion',
+  'GetGoal',
+  'UpdateGoal',
+] as const;
+
+const TRANSLATION_WORKER_TOOLS = ['Read', 'Write', 'Bash'] as const;
+
+const TRANSLATION_SUBAGENTS = [
+  'memory-extractor',
+  'memory-consolidator',
+  'translator',
+  'reviewer-fidelity',
+  'reviewer-naturalness',
+  'reviewer-continuity',
+  'repairer',
+  'conflict-arbitrator',
+  'consistency-auditor',
+] as const;
+
 const CODER_ROLE =
   `${TASK_AGENT_ROLE_PREFIX}\n\n` +
   'Your final message is the entire handoff — the parent sees nothing else from your run. ' +
@@ -103,9 +141,14 @@ const TRANSLATION_COORDINATOR_ROLE = [
   'Plan and delegate work autonomously, but keep a single Coordinator responsible for task ownership, artifact acceptance, and the final merge.',
   'An ordinary user message is live steering in this same session, not a cancellation signal. Acknowledge what changed, explain the affected scope and cost impact, preserve unrelated valid work, and continue the long-term goal without requiring another “continue” message.',
   'Only an explicit Stop or Cancel action authorizes hard cancellation. Otherwise finish the smallest safe atomic unit, stop assigning affected work, persist valid output, and re-plan.',
+  'You are the only translation scheduler. Delegate bounded semantic work only to the allowlisted translation profiles; those workers never delegate recursively, publish shared state, or decide task acceptance.',
+  'Keep the provider and model pinned by the project. Never browse the web, call MCP, or silently switch models. Shared translation state is published only by deterministic ledger and merge tools after version, hash, and quality-gate validation.',
   'Never silently merge an artifact produced for stale source, context, prompt, or instruction versions. Never claim a quality gate passed when its evidence or required capability is missing.',
   'Do not replace the durable ledger with a fixed prompt-stage script. Use the available tools and subagents according to the current goal and ledger state, and report a genuine blocked state when safe progress is impossible.',
 ].join('\n\n');
+
+const translationWorkerRole = (role: string): string =>
+  `${TASK_AGENT_ROLE_PREFIX}\n\n${TRANSLATION_WORKER_SHARED}\n\n${role}`;
 
 registerAgentProfile({
   name: 'agent',
@@ -118,10 +161,128 @@ registerAgentProfile({
 registerAgentProfile({
   name: 'translation-coordinator',
   description: 'Long-running translation Coordinator using the native session, goal, task, and event loop.',
-  tools: AGENT_TOOLS,
+  tools: TRANSLATION_COORDINATOR_TOOLS,
+  subagents: TRANSLATION_SUBAGENTS,
   renderSystemPrompt: (context) =>
     renderSystemPromptResult(TRANSLATION_COORDINATOR_ROLE, context, {
-      skillActive: skillActiveFor(AGENT_TOOLS),
+      skillActive: skillActiveFor(TRANSLATION_COORDINATOR_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'memory-extractor',
+  description: 'Extracts provenance-rich, spoiler-safe Story Memory from one bounded source range.',
+  whenToUse:
+    'Use for one ledger-assigned memory extraction task after deterministic source parsing. Supply stable paragraph IDs, hashes, chronology, schema, and a private artifact path.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_MEMORY_EXTRACTOR_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'memory-consolidator',
+  description: 'Consolidates extracted memories into auditable canonical-state proposals without publishing them.',
+  whenToUse:
+    'Use for one ledger-assigned consolidation batch whose immutable memory inputs share a book, schema, and accepted source version.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_MEMORY_CONSOLIDATOR_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'translator',
+  description: 'Produces paragraph-ID-addressed literary translations from a minimal, spoiler-safe context.',
+  whenToUse:
+    'Use for exactly one ledger-assigned translation chunk. Supply immutable source/context, accepted constraints, task versions, schema, and a private artifact path.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_TRANSLATOR_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'reviewer-fidelity',
+  description: 'Independently diagnoses source-to-target fidelity defects and emits issue records only.',
+  whenToUse:
+    'Use for one bounded fidelity review task with immutable source, current translation, hashes, and a private issue-artifact path.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_REVIEWER_FIDELITY_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'reviewer-naturalness',
+  description: 'Reviews target-language literary naturalness and emits evidence-backed issue records only.',
+  whenToUse:
+    'Use for one bounded naturalness review task with the current accepted translation, source guardrails, voice context, and a private issue-artifact path.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_REVIEWER_NATURALNESS_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'reviewer-continuity',
+  description: 'Checks bounded cross-passage continuity with spoiler-safe canonical and memory evidence.',
+  whenToUse:
+    'Use for one local continuity review task with explicit chapter bounds, stable IDs, canonical versions, memory IDs, and a private issue-artifact path.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_REVIEWER_CONTINUITY_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'repairer',
+  description: 'Produces minimal hash-guarded patches for accepted issues without editing translations.',
+  whenToUse:
+    'Use for one bounded accepted-issue set with immutable evidence, the current translation and hash, schema, and a private patch-artifact path.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_REPAIRER_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'conflict-arbitrator',
+  description: 'Arbitrates one competing-patch set into a unique auditable decision; never last-write-wins.',
+  whenToUse:
+    'Use only when deterministic merge detects multiple patches for the same stable ID. Supply the complete conflict set, evidence, current hash, schema, and a private decision-artifact path.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_CONFLICT_ARBITRATOR_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
+    }),
+});
+
+registerAgentProfile({
+  name: 'consistency-auditor',
+  description: 'Audits one whole-book consistency partition and emits review-compatible issues only.',
+  whenToUse:
+    'Use for one ledger-assigned entity, terminology, callback, item, relationship, or voice partition with bounded retrieval evidence and a private issue-artifact path.',
+  tools: TRANSLATION_WORKER_TOOLS,
+  subagents: [],
+  renderSystemPrompt: (context) =>
+    renderSystemPromptResult(translationWorkerRole(TRANSLATION_CONSISTENCY_AUDITOR_ROLE), context, {
+      skillActive: skillActiveFor(TRANSLATION_WORKER_TOOLS),
     }),
 });
 
