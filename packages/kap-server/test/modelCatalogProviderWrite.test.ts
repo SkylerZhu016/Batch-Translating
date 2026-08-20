@@ -384,6 +384,80 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     });
   });
 
+  it('persists explicit model prices as refresh-safe overrides and exposes them in the catalog', async () => {
+    await boot();
+    const pricedModel = {
+      model: 'gpt-4.1',
+      max_context_size: 1047576,
+      pricing: {
+        currency: 'USD',
+        input_usd_per_million: 2,
+        output_usd_per_million: 8,
+        cache_read_usd_per_million: 0.5,
+      },
+    } as const;
+    const created = await postJson<unknown>('/api/v1/providers', {
+      id: 'priced',
+      type: 'openai',
+      api_key: 'sk-test',
+      models: [pricedModel],
+    });
+    expect(created.status).toBe(201);
+
+    const onDisk = await readConfigToml();
+    expect(onDisk['models']).toMatchObject({
+      'priced/gpt-4.1': {
+        overrides: {
+          input_price_usd_per_million: 2,
+          output_price_usd_per_million: 8,
+          cache_read_price_usd_per_million: 0.5,
+        },
+      },
+    });
+    const models = await getJson<{ items: Array<Record<string, unknown>> }>('/api/v1/models');
+    const exposed = models.body.data.items.find((item) => item['provider'] === 'priced');
+    expect(exposed).toMatchObject({
+      provider: 'priced',
+      model: 'priced/gpt-4.1',
+      pricing: {
+        currency: 'USD',
+        input_usd_per_million: 2,
+        output_usd_per_million: 8,
+        cache_read_usd_per_million: 0.5,
+      },
+    });
+
+    const preserved = await putJson<unknown>('/api/v1/providers/priced', {
+      type: 'openai',
+      models: [{ model: 'gpt-4.1', max_context_size: 1047576 }],
+    });
+    expect(preserved.status).toBe(200);
+    const preservedDisk = await readConfigToml();
+    expect(preservedDisk['models']).toMatchObject({
+      'priced/gpt-4.1': {
+        overrides: {
+          input_price_usd_per_million: 2,
+          output_price_usd_per_million: 8,
+          cache_read_price_usd_per_million: 0.5,
+        },
+      },
+    });
+
+    const cleared = await putJson<unknown>('/api/v1/providers/priced', {
+      type: 'openai',
+      models: [{ model: 'gpt-4.1', max_context_size: 1047576, pricing: null }],
+    });
+    expect(cleared.status).toBe(200);
+    const clearedDisk = await readConfigToml();
+    expect(clearedDisk['models']).toEqual({
+      'priced/gpt-4.1': {
+        provider: 'priced',
+        model: 'gpt-4.1',
+        max_context_size: 1047576,
+      },
+    });
+  });
+
   it('rejects invalid create bodies with 40001', async () => {
     await boot();
     const cases: Array<{ name: string; body: unknown; path?: string }> = [

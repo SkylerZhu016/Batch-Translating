@@ -46,6 +46,13 @@ const ModelAliasBaseSchema = z.object({
   // over max_context_size; completion budgeting keeps the total window.
   maxInputSize: z.number().int().min(1).optional(),
   maxOutputSize: z.number().int().min(1).optional(),
+  // User-supplied USD prices per one million tokens. These are deliberately
+  // model metadata rather than a guessed catalog: gateways can expose custom
+  // names and prices, so only an explicit value is authoritative for budgets.
+  inputPriceUsdPerMillion: z.number().nonnegative().optional(),
+  outputPriceUsdPerMillion: z.number().nonnegative().optional(),
+  cacheReadPriceUsdPerMillion: z.number().nonnegative().optional(),
+  cacheCreationPriceUsdPerMillion: z.number().nonnegative().optional(),
   capabilities: z.array(z.string()).optional(),
   displayName: z.string().optional(),
   reasoningKey: z.string().optional(),

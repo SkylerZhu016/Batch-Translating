@@ -155,11 +155,19 @@ describe('AgentUsageService (wire-backed)', () => {
       }),
     );
 
-    svc.record('model-a', a1, { type: 'turn', turnId: 7, step: 2 });
+    svc.record(
+      'model-a',
+      a1,
+      { type: 'turn', turnId: 7, step: 2 },
+      { modelId: 'resolved-model', providerId: 'resolved-provider' },
+    );
 
     expect(contexts).toEqual([
       {
+        requestId: expect.any(String),
         model: 'model-a',
+        modelId: 'resolved-model',
+        providerId: 'resolved-provider',
         usage: a1,
         source: { type: 'turn', turnId: 7, step: 2 },
       },

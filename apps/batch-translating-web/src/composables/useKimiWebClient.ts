@@ -2691,6 +2691,15 @@ const translationCoordinator = useTranslationCoordinator({
     updateSession(sessionId, () => session);
     return session;
   },
+  ensureSessionPermission: async (sessionId, permissionMode) => {
+    const previous = rawState.sessions.find((candidate) => candidate.id === sessionId);
+    const session = preserveTranslationSessionProjection(
+      await getKimiWebApi().updateSession(sessionId, { permissionMode }),
+      previous,
+    );
+    updateSession(sessionId, () => session);
+    return session;
+  },
   ensureSessionModel: async (sessionId, model) => {
     const previous = rawState.sessions.find((candidate) => candidate.id === sessionId);
     const session = preserveTranslationSessionProjection(

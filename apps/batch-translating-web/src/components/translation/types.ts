@@ -36,6 +36,8 @@ export interface TranslationExecutionPolicy {
 export interface TranslationProjectDraft {
   title: string;
   sourcePath: string;
+  sourceLanguage: string;
+  targetLanguage: 'zh-CN' | 'en';
   /** TXT only: custom chapter-heading regex; empty means the default. */
   chapterPattern: string;
   workspacePath: string;
@@ -46,6 +48,7 @@ export interface TranslationProjectDraft {
 
 export interface TranslationProject extends TranslationProjectDraft {
   id: string;
+  revisionRound: number;
   status: TranslationProjectStatus;
   completedChapters: number;
   totalChapters: number;

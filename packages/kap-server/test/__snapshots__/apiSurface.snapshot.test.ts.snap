@@ -34,6 +34,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/v1/sessions/{session_id}",
+    ],
+    [
+      "DELETE",
+      "/api/v1/translation/rag/download",
+    ],
+    [
+      "DELETE",
       "/api/v1/workspaces/{workspace_id}",
     ],
     [
@@ -234,6 +242,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/translation/projects/{project_id}/status",
+    ],
+    [
+      "GET",
+      "/api/v1/translation/rag/status",
+    ],
+    [
+      "GET",
       "/api/v1/workspaces",
     ],
     [
@@ -391,6 +407,38 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/shutdown",
+    ],
+    [
+      "POST",
+      "/api/v1/translation/projects/{project_id}/completion/verify",
+    ],
+    [
+      "POST",
+      "/api/v1/translation/projects/{project_id}/instructions",
+    ],
+    [
+      "POST",
+      "/api/v1/translation/projects/{project_id}/report",
+    ],
+    [
+      "POST",
+      "/api/v1/translation/projects/initialize",
+    ],
+    [
+      "POST",
+      "/api/v1/translation/rag/detect",
+    ],
+    [
+      "POST",
+      "/api/v1/translation/rag/download",
+    ],
+    [
+      "POST",
+      "/api/v1/translation/rag/rebuild",
+    ],
+    [
+      "POST",
+      "/api/v1/translation/rag/verify",
     ],
     [
       "POST",

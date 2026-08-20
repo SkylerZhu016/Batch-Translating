@@ -43,7 +43,4 @@ Set-Location apps/batch-translating-desktop
 corepack pnpm exec tauri build
 ```
 
-NSIS 安装包位于 `src-tauri/target/release/bundle/nsis/`。仓库的
-`.github/workflows/batch-windows-build.yml` 执行相同构建、解包扫描并上传 CI artifact；它不会发布 GitHub Release。
-
-安装包不得包含项目源码、`node_modules`、本机配置、API key 或 token；唯一例外是运行本地 RAG 必需、经确定性 staging 白名单选出的 Python 服务文件。CI 会扫描桌面可执行文件、sidecar、staged RAG 资源以及解包后的安装内容，最终只上传 NSIS 安装程序，不创建 GitHub Release。本地最终验收副本放在被 Git 忽略的 `dist-desktop/`。
+NSIS 安装包位于 `src-tauri/target/release/bundle/nsis/`。安装包不得包含项目源码、`node_modules`、本机配置、API key、token、模型、虚拟环境、缓存、数据库、测试或本地翻译项目；运行本地 RAG 所需的 Python 服务文件由确定性白名单暂存。最终验收副本放在被 Git 忽略的 `dist-desktop/`，GitHub Release 由维护者手动创建。

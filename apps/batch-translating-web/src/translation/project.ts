@@ -16,6 +16,8 @@ import {
   type TranslationExecutionPolicy,
   type TranslationInitializationReceipt,
   type TranslationInstructionReceipt,
+  type TranslationLanguageSettings,
+  type TranslationOutputMilestone,
   type TranslationPaths,
   type TranslationProject,
   type TranslationProjectQualityPolicyReceipt,
@@ -53,6 +55,9 @@ export const TRANSLATION_PROJECT_JSON_SCHEMA = {
     'schemaVersion',
     'projectId',
     'name',
+    'languages',
+    'revisionRound',
+    'outputHistory',
     'instructionVersion',
     'instructionReceipts',
     'executionPolicy',
@@ -78,6 +83,18 @@ export const TRANSLATION_PROJECT_JSON_SCHEMA = {
     schemaVersion: { const: TRANSLATION_PROJECT_SCHEMA_VERSION },
     projectId: { type: 'string', minLength: 1 },
     name: { type: 'string', minLength: 1 },
+    languages: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['source', 'target'],
+      properties: {
+        source: { type: 'string', minLength: 1, maxLength: 80 },
+        target: { enum: ['zh-CN', 'en'] },
+      },
+    },
+    revisionRound: { type: 'integer', minimum: 1 },
+    latestOutput: { type: 'object' },
+    outputHistory: { type: 'array' },
     qualityPolicy: { type: 'object' },
     initialization: { type: 'object' },
     instructionVersion: { type: 'integer', minimum: 0 },
@@ -172,6 +189,7 @@ export const TRANSLATION_PROJECT_JSON_SCHEMA = {
 
 export interface CreateTranslationProjectInput {
   name: string;
+  languages?: TranslationLanguageSettings;
   /** Model pinned by the native translation Coordinator. */
   model?: string;
   /** Must be produced from a real capability probe; never synthesized as ready. */
@@ -236,6 +254,43 @@ function isStringArray(value: unknown): value is string[] {
 function isCountRecord(value: unknown): value is Record<string, number> {
   return isRecord(value)
     && Object.entries(value).every(([key, count]) => key.length > 0 && isNonNegativeInteger(count));
+}
+
+function validateOutputMilestone(
+  value: unknown,
+  path: string,
+  errors: string[],
+): value is TranslationOutputMilestone {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be an object`);
+    return false;
+  }
+  let valid = true;
+  if (!isNonNegativeInteger(value.round) || value.round < 1) {
+    errors.push(`${path}.round must be a positive integer`);
+    valid = false;
+  }
+  if (!isNonEmptyString(value.path)) {
+    errors.push(`${path}.path is required`);
+    valid = false;
+  }
+  if (!isSha256(value.sha256)) {
+    errors.push(`${path}.sha256 is invalid`);
+    valid = false;
+  }
+  if (!isNonNegativeInteger(value.byteLength) || value.byteLength < 1) {
+    errors.push(`${path}.byteLength must be a positive integer`);
+    valid = false;
+  }
+  if (value.structuralValidationPassed !== true) {
+    errors.push(`${path}.structuralValidationPassed must be true`);
+    valid = false;
+  }
+  if (!isIsoDate(value.recordedAt)) {
+    errors.push(`${path}.recordedAt is invalid`);
+    valid = false;
+  }
+  return valid;
 }
 
 function sameWorkflow(left: WorkflowOptions, right: WorkflowOptions): boolean {
@@ -1058,6 +1113,16 @@ export function joinLocalPath(root: string, ...parts: string[]): string {
   return joined;
 }
 
+/**
+ * Compare paths returned by the native runtime with paths assembled in the
+ * browser. Windows APIs commonly return backslashes even when the project was
+ * created from a forward-slash path. Keep every other character exact so this
+ * remains an ownership check rather than a general path canonicalizer.
+ */
+export function sameLocalPath(left: string, right: string): boolean {
+  return left.replace(/\\/g, '/') === right.replace(/\\/g, '/');
+}
+
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? 'source.epub';
 }
@@ -1066,10 +1131,13 @@ export function buildTranslationPaths(
   projectRoot: string,
   sourcePath: string,
   kind: TranslationSourceKind,
+  targetLanguage: TranslationLanguageSettings['target'] = 'zh-CN',
 ): TranslationPaths {
   const stateDir = joinLocalPath(projectRoot, 'state');
   const finalDir = joinLocalPath(projectRoot, 'final');
-  const finalOutputName = kind === 'txt' ? 'book.zh-CN.txt' : 'book.zh-CN.epub';
+  const finalOutputName = kind === 'txt'
+    ? `book.${targetLanguage}.txt`
+    : `book.${targetLanguage}.epub`;
   return {
     projectRoot,
     sourcePath,
@@ -1109,6 +1177,20 @@ export function createTranslationProject(
     throw new Error('Source file must have an .epub or .txt extension');
   }
   const kind = input.kind ?? sourceKindOfPath(sourcePath);
+  const requestedLanguages = input.languages ?? { source: 'auto', target: 'zh-CN' };
+  const languages: TranslationLanguageSettings = {
+    source: requestedLanguages.source.trim(),
+    target: requestedLanguages.target,
+  };
+  if (!languages.source.trim() || languages.source.length > 80) {
+    throw new Error('Source language must contain 1 to 80 characters');
+  }
+  if (!['zh-CN', 'en'].includes(languages.target)) {
+    throw new Error('Target language must be zh-CN or en');
+  }
+  if (languages.source !== 'auto' && languages.source === languages.target) {
+    throw new Error('Source and target languages must be different');
+  }
   const extensionKind = sourceKindOfPath(sourcePath);
   if (kind !== extensionKind) {
     throw new Error(`Source kind ${kind} does not match the .${extensionKind} file extension`);
@@ -1170,6 +1252,9 @@ export function createTranslationProject(
     schemaVersion: TRANSLATION_PROJECT_SCHEMA_VERSION,
     projectId: input.projectId ?? generatedId('translation'),
     name: input.name.trim(),
+    languages: { ...languages },
+    revisionRound: 1,
+    outputHistory: [],
     ...(selectedModel ? { model: selectedModel } : {}),
     ...(qualityPolicy ? { qualityPolicy } : {}),
     instructionVersion: 0,
@@ -1179,7 +1264,7 @@ export function createTranslationProject(
     createdAt: now,
     updatedAt: now,
     source,
-    paths: buildTranslationPaths(input.projectRoot, sourcePath, kind),
+    paths: buildTranslationPaths(input.projectRoot, sourcePath, kind, languages.target),
     workflow,
     maxAgents: normalizedMaxAgents,
     status: 'draft',
@@ -1560,6 +1645,9 @@ function normalizeProjectRuntimeMetadata(value: Record<string, unknown>): Record
     : value.instructionReceipts;
   const normalized: Record<string, unknown> = {
     ...value,
+    languages: value.languages ?? { source: 'auto', target: 'zh-CN' },
+    revisionRound: value.revisionRound ?? 1,
+    outputHistory: value.outputHistory ?? [],
     instructionVersion: value.instructionVersion === undefined ? 0 : value.instructionVersion,
     instructionReceipts,
     executionPolicy: value.executionPolicy ?? {
@@ -1590,6 +1678,46 @@ export function parseProjectMetadata(value: unknown): ParseResult<TranslationPro
   }
   if (!isNonEmptyString(migrated.projectId)) errors.push('projectId must be a non-empty string');
   if (!isNonEmptyString(migrated.name)) errors.push('name must be a non-empty string');
+  const languages = migrated.languages;
+  if (
+    !isRecord(languages)
+    || !isNonEmptyString(languages.source)
+    || languages.source.length > 80
+    || !['zh-CN', 'en'].includes(String(languages.target))
+    || (languages.source !== 'auto' && languages.source === languages.target)
+  ) {
+    errors.push('languages must contain a valid, different source and target');
+  }
+  if (!isNonNegativeInteger(migrated.revisionRound) || migrated.revisionRound < 1) {
+    errors.push('revisionRound must be a positive integer');
+  }
+  const latestOutput = migrated.latestOutput;
+  const latestOutputValid = latestOutput === undefined
+    ? false
+    : validateOutputMilestone(latestOutput, 'latestOutput', errors);
+  if (!Array.isArray(migrated.outputHistory)) {
+    errors.push('outputHistory must be an array');
+  } else {
+    let previousRound = 0;
+    migrated.outputHistory.forEach((entry, index) => {
+      if (!validateOutputMilestone(entry, `outputHistory[${index}]`, errors)) return;
+      if (entry.round <= previousRound) {
+        errors.push('outputHistory rounds must be strictly increasing');
+      }
+      previousRound = entry.round;
+    });
+    if (
+      latestOutputValid
+      && isRecord(latestOutput)
+      && !migrated.outputHistory.some((entry) => (
+        isRecord(entry)
+        && entry.round === latestOutput.round
+        && entry.sha256 === latestOutput.sha256
+      ))
+    ) {
+      errors.push('latestOutput must also be present in outputHistory');
+    }
+  }
   if (migrated.model !== undefined && !isNonEmptyString(migrated.model)) {
     errors.push('model must be a non-empty string when present');
   }
@@ -1636,7 +1764,7 @@ export function parseProjectMetadata(value: unknown): ParseResult<TranslationPro
       if (
         isRecord(migrated.paths)
         && isNonEmptyString(migrated.paths.sourceCopy)
-        && parsed.value.sourceReceipt.copiedPath !== migrated.paths.sourceCopy
+        && !sameLocalPath(parsed.value.sourceReceipt.copiedPath, migrated.paths.sourceCopy)
       ) {
         errors.push('initialization source copy path does not match project paths');
       }
@@ -1710,7 +1838,7 @@ export function parseProjectMetadata(value: unknown): ParseResult<TranslationPro
     else if (
       isRecord(migrated.paths)
       && isNonEmptyString(migrated.paths.finalReportPath)
-      && parsed.value.path !== migrated.paths.finalReportPath
+      && !sameLocalPath(parsed.value.path, migrated.paths.finalReportPath)
     ) {
       errors.push('reportReceipt path does not match project paths');
     }
@@ -1936,7 +2064,7 @@ export function mergeTranslationInitialization(
   if (project.source.sha256 !== undefined && receipt.sourceReceipt.sha256 !== project.source.sha256) {
     throw new Error('Initialization source hash does not match the immutable uploaded source');
   }
-  if (receipt.sourceReceipt.copiedPath !== project.paths.sourceCopy) {
+  if (!sameLocalPath(receipt.sourceReceipt.copiedPath, project.paths.sourceCopy)) {
     throw new Error('Initialization source copy path does not match the program-owned project path');
   }
   if (receipt.sourceReceipt.copiedSha256 !== receipt.sourceReceipt.sha256) {
@@ -2035,7 +2163,7 @@ export function mergeTranslationCompletionVerification(
     if (verification.finalOutput.artifactType !== project.source.kind) {
       throw new Error('Final output type does not match project source type');
     }
-    if (verification.finalOutput.path !== project.paths.finalOutputPath) {
+    if (!sameLocalPath(verification.finalOutput.path, project.paths.finalOutputPath)) {
       throw new Error('Final output path does not match the program-owned project path');
     }
   }
@@ -2085,7 +2213,7 @@ function currentVerifiedFinalOutput(project: TranslationProject) {
     || !project.source.sha256
     || verification.sourceSha256 !== project.source.sha256
     || output === undefined
-    || output.path !== project.paths.finalOutputPath
+    || !sameLocalPath(output.path, project.paths.finalOutputPath)
     || output.sourceSha256 !== project.source.sha256
     || output.artifactType !== project.source.kind
     || output.coverage !== 1
@@ -2106,7 +2234,7 @@ export function mergeTranslationReportReceipt(
   if (currentVerifiedFinalOutput(project) === undefined) {
     throw new Error('A report cannot be accepted before current completion verification passes');
   }
-  if (receipt.path !== project.paths.finalReportPath) {
+  if (!sameLocalPath(receipt.path, project.paths.finalReportPath)) {
     throw new Error('Translation report path does not match the program-owned project path');
   }
   if (
@@ -2291,7 +2419,7 @@ export function hasVerifiedTranslationInitialization(project: TranslationProject
     && receipt.sourceReceipt.verified === true
     && receipt.sourceReceipt.sha256 === project.source.sha256
     && receipt.sourceReceipt.copiedSha256 === project.source.sha256
-    && receipt.sourceReceipt.copiedPath === project.paths.sourceCopy
+    && sameLocalPath(receipt.sourceReceipt.copiedPath, project.paths.sourceCopy)
     && receipt.ledgerSummary.projectId === project.projectId
     && receipt.ledgerSummary.integrityOk === true;
 }
@@ -2299,12 +2427,22 @@ export function hasVerifiedTranslationInitialization(project: TranslationProject
 /** Return the final artifact only when every persisted quality and integrity gate is current. */
 export function verifiedTranslationOutputPath(project: TranslationProject): string | undefined {
   if (project.status !== 'completed') return undefined;
+  const nativeOutput = project.latestOutput;
+  if (
+    nativeOutput !== undefined
+    && nativeOutput.round === project.revisionRound
+    && sameLocalPath(nativeOutput.path, project.paths.finalOutputPath)
+    && isSha256(nativeOutput.sha256)
+    && isNonNegativeInteger(nativeOutput.byteLength)
+    && nativeOutput.byteLength > 0
+    && nativeOutput.structuralValidationPassed === true
+  ) return nativeOutput.path;
   const output = currentVerifiedFinalOutput(project);
   if (output === undefined || project.reportReceipt === undefined) return undefined;
   const report = parseTranslationReportReceipt(project.reportReceipt);
   if (
     !report.ok
-    || report.value.path !== project.paths.finalReportPath
+    || !sameLocalPath(report.value.path, project.paths.finalReportPath)
     || !isSha256(report.value.sha256)
   ) return undefined;
   return output.path;

@@ -11,6 +11,7 @@
 
 import type { AppMessage, AppApprovalRequest, AppTask, CompactionMarkerMetadata } from '../api/types';
 import { COMPACTION_MARKER_METADATA_KEY } from '../api/types';
+import { isDisplayableUserMessage } from '../lib/messageVisibility';
 import type { AgentMember, ApprovalBlock, ChatTurn, CronTurnData, DiffLine, ToolCall, ToolMedia, TurnAttachment, TurnBlock } from '../types';
 
 const READ_MEDIA_TOOL_RE = /^read[_-]?media(?:file)?$/i;
@@ -469,24 +470,6 @@ function buildCronTurn(msg: AppMessage, no: number, kind: 'cron_job' | 'cron_mis
   return { id: msg.id, role: 'cron', no, text, createdAt: msg.createdAt, cron };
 }
 
-
-/**
- * Whether a USER-role message should be shown. Mirrors agent-core's
- * isAgentReplayUserTurnRecord (agent/replay/turns.ts): only real user input
- * (origin `user`/absent, or a user-typed slash command) is displayed;
- * system-injected user turns (compaction summaries, injections, hook results,
- * retries, system triggers, background tasks, cron) are hidden. The origin
- * arrives via message metadata (see toProtocolMessage in
- * @moonshot-ai/agent-core).
- */
-function isDisplayableUserMessage(msg: AppMessage): boolean {
-  const origin = msg.metadata?.['origin'] as { kind?: string; trigger?: string } | undefined;
-  const kind = origin?.kind;
-  if (kind === undefined || kind === 'user') return true;
-  if (kind === 'skill_activation') return origin?.trigger === 'user-slash';
-  if (kind === 'plugin_command') return origin?.trigger === 'user-slash';
-  return false;
-}
 
 /**
  * A compaction summary message — either the client-side marker appended on

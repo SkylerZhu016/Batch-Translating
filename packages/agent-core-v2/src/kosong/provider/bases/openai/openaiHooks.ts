@@ -135,6 +135,32 @@ export function firstProcessEnv(names: readonly string[] | undefined): string | 
   return undefined;
 }
 
+/**
+ * OpenAI-compatible gateways commonly publish their model catalog at
+ * `/v1/models` and their chat endpoint at `/v1/chat/completions`. The desktop
+ * setup dialog accepts either the API root (`https://gateway.example`) or the
+ * explicit OpenAI base (`https://gateway.example/v1`). Keep both forms
+ * equivalent at runtime so a successful catalog probe cannot be followed by a
+ * chat request to the unrelated `/chat/completions` path.
+ *
+ * Only a URL whose path is exactly `/` is expanded. Custom gateways that
+ * intentionally use a path prefix keep that prefix unchanged.
+ */
+export function normalizeOpenAIBaseUrl(baseUrl: string | undefined): string | undefined {
+  const trimmed = baseUrl?.trim().replace(/\/+$/, '');
+  if (!trimmed) return trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.pathname === '/' && parsed.search === '' && parsed.hash === '') {
+      return `${parsed.origin}/v1`;
+    }
+  } catch {
+    // Preserve the existing value so the provider returns its normal,
+    // actionable URL/configuration error instead of hiding it here.
+  }
+  return trimmed;
+}
+
 export function traitProvides(
   traits: readonly ResolvedTrait[],
 ): Record<string, unknown> | undefined {

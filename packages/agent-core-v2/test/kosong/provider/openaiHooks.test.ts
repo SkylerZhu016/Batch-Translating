@@ -21,6 +21,7 @@ import {
   compactObject,
   composeOpenAIChatHooks,
   firstProcessEnv,
+  normalizeOpenAIBaseUrl,
   traitEndpoint,
   traitProvides,
 } from '#/kosong/provider/bases/openai/openaiHooks';
@@ -205,5 +206,19 @@ describe('traitProvides / compactObject', () => {
   it('drops undefined values so absent config never clobbers provides', () => {
     expect(compactObject({ a: undefined, b: 1 })).toEqual({ b: 1 });
     expect(compactObject({})).toEqual({});
+  });
+});
+
+describe('normalizeOpenAIBaseUrl', () => {
+  it('adds /v1 to an origin-only gateway URL', () => {
+    expect(normalizeOpenAIBaseUrl('https://gateway.example')).toBe('https://gateway.example/v1');
+    expect(normalizeOpenAIBaseUrl('https://gateway.example/')).toBe('https://gateway.example/v1');
+  });
+
+  it('preserves explicit OpenAI and custom path bases', () => {
+    expect(normalizeOpenAIBaseUrl('https://gateway.example/v1/')).toBe('https://gateway.example/v1');
+    expect(normalizeOpenAIBaseUrl('https://gateway.example/openai')).toBe(
+      'https://gateway.example/openai',
+    );
   });
 });

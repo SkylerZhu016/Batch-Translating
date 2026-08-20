@@ -63,6 +63,13 @@ export const createProviderModelSchema = z.object({
   max_output_size: z.number().int().min(1).optional(),
   support_efforts: z.array(z.string().min(1)).optional(),
   adaptive_thinking: z.boolean().optional(),
+  pricing: z.object({
+    currency: z.literal('USD'),
+    input_usd_per_million: z.number().nonnegative(),
+    output_usd_per_million: z.number().nonnegative(),
+    cache_read_usd_per_million: z.number().nonnegative().optional(),
+    cache_creation_usd_per_million: z.number().nonnegative().optional(),
+  }).nullable().optional(),
 });
 export type CreateProviderModel = z.infer<typeof createProviderModelSchema>;
 

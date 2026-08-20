@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { onAuthRequired } from './api/daemon/serverAuth';
-import type { AppConfig, AppTask, TranslationRagStatus } from './api/types';
+import type { AppConfig, AppTask, ProviderModelConfigInput, TranslationRagStatus } from './api/types';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
 import ConfigureProviderDialog from './components/dialogs/ConfigureProviderDialog.vue';
 import EditProviderModelsDialog from './components/dialogs/EditProviderModelsDialog.vue';
@@ -102,6 +102,16 @@ provide(
   (toolCallId: string) => client.swarmMembersByToolCallId.value.get(toolCallId) ?? [],
 );
 
+const REQUIRED_TOOLS = [
+  'Read',
+  'Write',
+  'Bash',
+  'Agent',
+  'AgentSwarm',
+  // Required by native /goal to terminate a completed or genuinely blocked run.
+  'UpdateGoal',
+] as const;
+
 let stopAuthRequired: (() => void) | null = null;
 
 onMounted(() => {
@@ -113,6 +123,10 @@ onMounted(() => {
     .then(async () => {
       await client.loadAllSessions();
       await Promise.allSettled([
+        // The translation client has a fixed, intentionally small tool surface.
+        // Keep both single-agent and swarm delegation available after upgrades,
+        // including for homes that previously persisted the four-tool allowlist.
+        client.updateConfig({ tools: { enabled: [...REQUIRED_TOOLS], disabled: [] } }),
         // Detection is read-only and never downloads a model. A real backend
         // probe is required before the UI may unlock the second-review gate.
         client.detectTranslationRag(),
@@ -142,7 +156,6 @@ const correctionError = ref<string | null>(null);
 const settingsSaving = ref(false);
 const diagnosticsExporting = ref(false);
 
-const REQUIRED_TOOLS = ['Read', 'Write', 'Bash', 'AgentSwarm'] as const;
 const SETTINGS_STORAGE_KEY = 'batch-translating.settings';
 const EXIT_NO_PROMPT_KEY = 'batch-translating.exit-no-prompt';
 
@@ -254,6 +267,8 @@ function newProjectDraft(): TranslationProjectDraft {
   return {
     title: '',
     sourcePath: '',
+    sourceLanguage: 'auto',
+    targetLanguage: 'zh-CN',
     chapterPattern: '',
     workspacePath: defaultWorkspacePath(),
     agentCount,
@@ -308,11 +323,18 @@ function loadSettings(): TranslationSettings {
 const createDraft = ref<TranslationProjectDraft>(newProjectDraft());
 const settingsDraft = ref<TranslationSettings>(loadSettings());
 
+const modelCollator = new Intl.Collator('en', {
+  numeric: true,
+  sensitivity: 'base',
+});
+
 const modelOptions = computed(() => availableTranslationModels()
   .map((model) => ({
     value: model.id,
     label: model.displayName ?? model.model ?? model.id,
-  })));
+  }))
+  .sort((left, right) => modelCollator.compare(left.label, right.label)
+    || modelCollator.compare(left.value, right.value)));
 
 watch(
   [modelOptions, () => client.defaultModel.value],
@@ -463,6 +485,9 @@ function toViewProject(entry: ProjectSession): ViewProject {
     id: entry.sessionId,
     title: project.name,
     sourcePath: project.source.sourcePath,
+    sourceLanguage: project.languages.source,
+    targetLanguage: project.languages.target,
+    revisionRound: project.revisionRound,
     chapterPattern: project.source.chapterPattern ?? '',
     workspacePath: project.paths.projectRoot,
     agentCount: project.maxAgents,
@@ -738,6 +763,10 @@ async function createProject(): Promise<void> {
       name: createDraft.value.title.trim() || createDraft.value.sourcePath.replace(/\.(epub|txt)$/i, ''),
       sourceFile: selectedSourceFile.value ?? undefined,
       sourcePath: selectedSourceFile.value ? undefined : createDraft.value.sourcePath.trim(),
+      languages: {
+        source: createDraft.value.sourceLanguage,
+        target: createDraft.value.targetLanguage,
+      },
       chapterPattern: createDraft.value.chapterPattern?.trim() || undefined,
       projectRoot: createDraft.value.workspacePath,
       workspaceId: workspace?.id,
@@ -757,7 +786,7 @@ async function createProject(): Promise<void> {
     if (sessionId) {
       selectedSessionId.value = sessionId;
       await runner.selectTranslationProject(sessionId);
-      activeView.value = 'run';
+      activeView.value = 'agent-console';
     } else {
       activeView.value = 'projects';
     }
@@ -783,7 +812,7 @@ async function continueProject(project: ViewProject): Promise<void> {
   showProjectDetails.value = false;
   selectedSessionId.value = entry.sessionId;
   await runner.selectTranslationProject(entry.sessionId);
-  activeView.value = 'run';
+  activeView.value = 'agent-console';
   if (entry.project.status === 'draft' || entry.project.status === 'ready') {
     await runner.startTranslationRun(entry.sessionId);
   } else if (entry.project.status !== 'running' && entry.project.status !== 'completed') {
@@ -1045,7 +1074,7 @@ async function saveEditedProvider(payload: {
   apiKey?: string;
   baseUrl?: string;
   defaultModel?: string;
-  models: Array<{ model: string; maxContextSize: number }>;
+  models: ProviderModelConfigInput[];
 }): Promise<void> {
   const id = editProviderId.value;
   if (!id) return;
@@ -1203,8 +1232,11 @@ function setUiFont(value: string): void {
           :running="selectedProject?.status === 'running'"
           :command-value="correction"
           :busy="correctionSubmitting"
+          :conversation-busy="client.working.value"
+          :compacting="client.compaction.value !== null"
           @update:command-value="correction = $event; correctionError = null"
           @send="sendCorrection"
+          @compact="client.compact()"
         />
       </div>
 
@@ -1437,7 +1469,7 @@ function setUiFont(value: string): void {
 
 .translation-run-surface__error {
   position: absolute;
-  z-index: 1;
+  z-index: var(--z-sticky);
   top: var(--space-3);
   right: var(--space-4);
   left: var(--space-4);
@@ -1451,7 +1483,7 @@ function setUiFont(value: string): void {
 
 .translation-agent-console__error {
   position: absolute;
-  z-index: 1;
+  z-index: var(--z-sticky);
   top: var(--space-3);
   right: var(--space-4);
   left: var(--space-4);

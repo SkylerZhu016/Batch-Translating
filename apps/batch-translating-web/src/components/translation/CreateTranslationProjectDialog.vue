@@ -9,6 +9,7 @@ import Dialog from '../ui/Dialog.vue';
 import Field from '../ui/Field.vue';
 import Icon from '../ui/Icon.vue';
 import Input from '../ui/Input.vue';
+import Select from '../ui/Select.vue';
 import type { TranslationProjectDraft, TranslationWorkflowOptions } from './types';
 
 const props = withDefaults(defineProps<{
@@ -58,6 +59,8 @@ const setupBgeLabel = computed(() => policyLocale.value === 'zhCN'
 const canCreate = computed(() => Boolean(
   props.modelValue.sourcePath.trim()
   && props.modelValue.workspacePath.trim()
+  && props.modelValue.sourceLanguage.trim()
+  && props.modelValue.sourceLanguage !== props.modelValue.targetLanguage
   && props.modelValue.agentCount >= 2
   && props.modelValue.agentCount <= 128
   && Number.isSafeInteger(props.modelValue.executionPolicy.softBudgetMicros)
@@ -108,6 +111,11 @@ function updateAgentCount(value: string): void {
       maxConcurrency: Math.min(agentCount, props.modelValue.executionPolicy.maxConcurrency),
     },
   });
+}
+
+function updateTargetLanguage(value: string): void {
+  if (value !== 'zh-CN' && value !== 'en') return;
+  updateField('targetLanguage', value);
 }
 
 function budgetUsd(micros: number): number {
@@ -222,6 +230,42 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
         </Field>
       </Field>
 
+      <div class="create-project__language-grid">
+        <Field
+          :label="t('translation.create.sourceLanguageLabel')"
+          :hint="t('translation.create.sourceLanguageHint')"
+        >
+          <Input
+            :model-value="modelValue.sourceLanguage"
+            list="translation-source-languages"
+            :placeholder="t('translation.create.sourceLanguagePlaceholder')"
+            @update:model-value="updateField('sourceLanguage', String($event))"
+          />
+          <datalist id="translation-source-languages">
+            <option value="auto">{{ t('translation.create.languageAuto') }}</option>
+            <option value="en">{{ t('translation.create.languageEnglish') }}</option>
+            <option value="zh-CN">{{ t('translation.create.languageChinese') }}</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="es">Español</option>
+          </datalist>
+        </Field>
+        <Field
+          :label="t('translation.create.targetLanguageLabel')"
+          :hint="t('translation.create.targetLanguageHint')"
+        >
+          <Select
+            :model-value="modelValue.targetLanguage"
+            @update:model-value="updateTargetLanguage"
+          >
+            <option value="zh-CN">{{ t('translation.create.languageChinese') }}</option>
+            <option value="en">{{ t('translation.create.languageEnglish') }}</option>
+          </Select>
+        </Field>
+      </div>
+
       <Field :label="t('translation.create.workspaceLabel')" :hint="t('translation.create.workspaceHint')">
         <div class="create-project__picker">
           <Input
@@ -236,6 +280,9 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
         </div>
       </Field>
 
+      <details class="create-project__advanced-settings">
+        <summary>{{ t('translation.create.advancedSettings') }}</summary>
+        <div class="create-project__advanced-settings-body">
       <div class="create-project__row">
         <Field
           class="create-project__agents"
@@ -361,6 +408,8 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
           </div>
         </div>
       </fieldset>
+        </div>
+      </details>
     </form>
 
     <template #foot>
@@ -440,6 +489,35 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
   margin-bottom: var(--space-2);
 }
 
+.create-project__advanced-settings {
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.create-project__advanced-settings summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+.create-project__advanced-settings summary:focus-visible {
+  outline: none;
+  border-radius: var(--radius-xs);
+  box-shadow: var(--p-focus-ring);
+}
+
+.create-project__advanced-settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
 .create-project__row {
   display: flex;
   align-items: flex-start;
@@ -461,6 +539,12 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
 }
 
 .create-project__policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.create-project__language-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
@@ -548,6 +632,10 @@ const isTxtSource = computed(() => /\.txt$/i.test(props.modelValue.sourcePath.tr
   }
 
   .create-project__policy-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .create-project__language-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

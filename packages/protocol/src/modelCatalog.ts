@@ -8,6 +8,13 @@ export const modelCatalogItemSchema = z.object({
   capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
+  pricing: z.object({
+    currency: z.literal('USD'),
+    input_usd_per_million: z.number().nonnegative(),
+    output_usd_per_million: z.number().nonnegative(),
+    cache_read_usd_per_million: z.number().nonnegative().optional(),
+    cache_creation_usd_per_million: z.number().nonnegative().optional(),
+  }).optional(),
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 

@@ -1,6 +1,6 @@
 {
   "name": "@batch-translating/core",
-  "version": "0.32.0",
+  "version": "0.2.0",
   "description": "Batch Translating CLI — 批量翻译引擎（基于 Kimi Code 二改）",
   "license": "MIT",
   "author": "SkylerZhu",

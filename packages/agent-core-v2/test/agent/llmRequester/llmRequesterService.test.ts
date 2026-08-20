@@ -295,6 +295,39 @@ describe('AgentLLMRequesterService Anthropic effort diagnostics', () => {
   });
 });
 
+describe('AgentLLMRequesterService request guards', () => {
+  it('blocks a new logical request before the provider is called', async () => {
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls, null), undefined);
+    const source = { type: 'turn', turnId: 7, step: 3 } as const;
+    const dispose = service.registerRequestGuard((received) => {
+      expect(received).toEqual(source);
+      throw new Error('hard budget reached');
+    });
+
+    await expect(service.request({ source })).rejects.toThrow('hard budget reached');
+    expect(calls.value).toBe(0);
+
+    dispose.dispose();
+    await service.request({ source });
+    expect(calls.value).toBe(1);
+  });
+
+  it('checks once while allowing recovery attempts for work already started', async () => {
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls), undefined);
+    let guardCalls = 0;
+    service.registerRequestGuard(() => {
+      guardCalls += 1;
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(guardCalls).toBe(1);
+    expect(calls.value).toBe(2);
+  });
+});
+
 describe('AgentLLMRequesterService strict resend', () => {
   it('resends once with strict projection after a recoverable structural 400', async () => {
     const calls = { value: 0 };

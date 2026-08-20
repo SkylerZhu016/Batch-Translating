@@ -21,6 +21,7 @@ import {
   compactObject,
   composeOpenAIChatHooks,
   firstProcessEnv,
+  normalizeOpenAIBaseUrl,
   traitEndpoint,
   traitProvides,
 } from './openaiHooks';
@@ -40,8 +41,9 @@ registerProtocolBase({
           config.apiKey ??
           firstProcessEnv(endpoint?.apiKeyEnv) ??
           (endpoint === undefined ? undefined : ''),
-        baseUrl:
+        baseUrl: normalizeOpenAIBaseUrl(
           config.baseUrl ?? firstProcessEnv(endpoint?.baseUrlEnv) ?? endpoint?.defaultBaseUrl,
+        ),
         defaultHeaders: traitDefaultHeaders(traits),
         maxTokens: config.providerOptions?.defaultMaxTokens,
         reasoningKey: config.providerOptions?.reasoningKey,

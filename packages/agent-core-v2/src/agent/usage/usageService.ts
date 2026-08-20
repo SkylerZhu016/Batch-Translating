@@ -13,6 +13,7 @@
  * live record. Bound at Agent scope.
  */
 
+import { randomUUID } from 'node:crypto';
 import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -23,7 +24,11 @@ import type { AgentLLMRequestSource } from '#/agent/llmRequester/llmRequester';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventBus } from '#/app/event/eventBus';
 import { IWireService } from '#/wire/wire';
-import type { UsageRecordedContext, UsageStatus } from './usage';
+import type {
+  UsageRecordedContext,
+  UsageResolvedModelIdentity,
+  UsageStatus,
+} from './usage';
 import { IAgentUsageService } from './usage';
 import {
   copyUsage,
@@ -74,7 +79,12 @@ export class AgentUsageService extends Disposable implements IAgentUsageService 
     this.states.set(usageCurrentTurnKey, value);
   }
 
-  record(model: string, usage: TokenUsage, source?: AgentLLMRequestSource): void {
+  record(
+    model: string,
+    usage: TokenUsage,
+    source?: AgentLLMRequestSource,
+    identity?: UsageResolvedModelIdentity,
+  ): void {
     const usageScope: UsageRecordScope = source?.type === 'turn' ? 'turn' : 'session';
     this.wire.dispatch(recordUsage({ model, usage, usageScope }));
 
@@ -90,7 +100,13 @@ export class AgentUsageService extends Disposable implements IAgentUsageService 
     }
 
     this.eventBus?.publish({ type: 'agent.status.updated', usage: this.status() });
-    this._onDidRecord.fire({ model, usage: copyUsage(usage), source });
+    this._onDidRecord.fire({
+      requestId: randomUUID(),
+      model,
+      ...(identity === undefined ? {} : identity),
+      usage: copyUsage(usage),
+      source,
+    });
   }
 
   status(): UsageStatus {

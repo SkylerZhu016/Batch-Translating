@@ -333,7 +333,7 @@ describe('goal tools', () => {
   });
 
   it.each([
-    ['complete', null, 'Goal completed successfully'],
+    ['complete', 'complete', 'Goal completed successfully'],
     ['blocked', 'blocked', 'Goal blocked.'],
   ] as const)(
     'UpdateGoal applies %s to a goal replaced earlier in the same batch',
@@ -357,7 +357,7 @@ describe('goal tools', () => {
   );
 
   it.each([
-    ['complete', null, 'Goal completed successfully'],
+    ['complete', 'complete', 'Goal completed successfully'],
     ['blocked', 'blocked', 'Goal blocked.'],
   ] as const)(
     'UpdateGoal applies %s when the goal was created earlier in the same batch',

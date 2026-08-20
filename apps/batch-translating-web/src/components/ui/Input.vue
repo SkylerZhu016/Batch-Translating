@@ -11,6 +11,7 @@ withDefaults(defineProps<{
   disabled?: boolean;
   readonly?: boolean;
   error?: boolean;
+  list?: string;
 }>(), {
   size: 'md',
   type: 'text',
@@ -49,6 +50,7 @@ defineExpose({ focus, select, el });
     :placeholder="placeholder"
     :disabled="disabled"
     :readonly="readonly"
+    :list="list"
     @input="onInput"
     @focus="$emit('focus', $event)"
     @blur="$emit('blur', $event)"

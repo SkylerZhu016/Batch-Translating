@@ -32,6 +32,7 @@ import type {
   PageRequest,
   PromptSubmission,
   PromptSubmitResult,
+  ProviderModelConfigInput,
   QuestionResponse,
   TranslationCompletionRequest,
   TranslationCompletionVerification,
@@ -1398,7 +1399,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
     apiKey?: string;
     baseUrl?: string;
     defaultModel?: string;
-    models: Array<{ model: string; maxContextSize?: number }>;
+    models: ProviderModelConfigInput[];
   }): Promise<AppProvider> {
     // POST /v1/providers — the daemon requires the provider id and the full
     // model alias list (max_context_size is optional and falls back to the
@@ -1411,6 +1412,19 @@ export class DaemonKimiWebApi implements KimiWebApi {
         ...(model.maxContextSize !== undefined
           ? { max_context_size: model.maxContextSize }
           : {}),
+        ...(model.pricing === undefined ? {} : model.pricing === null ? { pricing: null } : {
+          pricing: {
+            currency: model.pricing.currency,
+            input_usd_per_million: model.pricing.inputUsdPerMillion,
+            output_usd_per_million: model.pricing.outputUsdPerMillion,
+            ...(model.pricing.cacheReadUsdPerMillion === undefined ? {} : {
+              cache_read_usd_per_million: model.pricing.cacheReadUsdPerMillion,
+            }),
+            ...(model.pricing.cacheCreationUsdPerMillion === undefined ? {} : {
+              cache_creation_usd_per_million: model.pricing.cacheCreationUsdPerMillion,
+            }),
+          },
+        }),
       })),
     };
     if (input.apiKey !== undefined) body['api_key'] = input.apiKey;
@@ -1434,7 +1448,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
     apiKey?: string;
     baseUrl?: string;
     defaultModel?: string;
-    models: Array<{ model: string; maxContextSize?: number }>;
+    models: ProviderModelConfigInput[];
   }): Promise<AppProvider> {
     const body: Record<string, unknown> = {
       type: input.type,
@@ -1443,6 +1457,19 @@ export class DaemonKimiWebApi implements KimiWebApi {
         ...(model.maxContextSize !== undefined
           ? { max_context_size: model.maxContextSize }
           : {}),
+        ...(model.pricing === undefined ? {} : model.pricing === null ? { pricing: null } : {
+          pricing: {
+            currency: model.pricing.currency,
+            input_usd_per_million: model.pricing.inputUsdPerMillion,
+            output_usd_per_million: model.pricing.outputUsdPerMillion,
+            ...(model.pricing.cacheReadUsdPerMillion === undefined ? {} : {
+              cache_read_usd_per_million: model.pricing.cacheReadUsdPerMillion,
+            }),
+            ...(model.pricing.cacheCreationUsdPerMillion === undefined ? {} : {
+              cache_creation_usd_per_million: model.pricing.cacheCreationUsdPerMillion,
+            }),
+          },
+        }),
       })),
     };
     if (input.newId !== undefined) body['new_id'] = input.newId;

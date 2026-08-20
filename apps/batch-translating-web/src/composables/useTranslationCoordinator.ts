@@ -6,7 +6,6 @@ import type {
   TranslationRuntimeStatus,
 } from '../api/types';
 import {
-  buildCoordinatorQualityPolicyEnvelope,
   createTranslationProject as createProjectMetadata,
   createTranslationInstructionReceipt,
   createTranslationQualityPolicy,
@@ -50,6 +49,10 @@ export interface CreateTranslationProjectRequest {
   sourceFile?: File;
   /** Advanced fallback for an EPUB/TXT that is already available to the daemon. */
   sourcePath?: string;
+  languages: {
+    source: string;
+    target: 'zh-CN' | 'en';
+  };
   /** TXT only: custom chapter-heading regular expression override. */
   chapterPattern?: string;
   projectRoot: string;
@@ -117,6 +120,11 @@ export interface TranslationCoordinatorHost {
     agentProfile?: string;
   }): Promise<AppSession>;
   updateSessionMetadata(sessionId: string, project: TranslationProject): Promise<AppSession>;
+  /** Persist `/auto` before creating or resuming the native goal. */
+  ensureSessionPermission(
+    sessionId: string,
+    mode: 'manual' | 'auto' | 'yolo',
+  ): Promise<AppSession>;
   /** Re-apply the durable project model before any paid prompt/control action. */
   ensureSessionModel(sessionId: string, model: string): Promise<AppSession>;
   /** Recovery path for legacy projects created before the model was persisted. */
@@ -142,7 +150,12 @@ export interface TranslationCoordinatorHost {
     sessionId: string,
     text: string,
     attachments?: PromptAttachment[],
-    options?: { permissionMode?: 'manual' | 'auto' | 'yolo' },
+    options?: {
+      permissionMode?: 'manual' | 'auto' | 'yolo';
+      throwOnFailure?: boolean;
+      /** Match Kimi Code ctrl+s while a native goal owns the session, including between goal turns. */
+      goalActive?: boolean;
+    },
   ): Promise<void>;
   abortSession(sessionId: string): Promise<void>;
   uploadFile(file: Blob, name?: string): Promise<PromptAttachment>;
@@ -369,79 +382,69 @@ function hasPassedCompletionReceipt(project: TranslationProject): boolean {
     && verification.finalOutput !== undefined;
 }
 
+function nativeOutputMilestone(
+  project: TranslationProject,
+  runtime: TranslationRuntimeStatus,
+): TranslationProject['latestOutput'] {
+  const output = runtime.finalOutput;
+  if (output === undefined) return undefined;
+  const byteLength = output.byteLength ?? output.byte_length;
+  const validation = output.structuralValidation ?? output.structural_validation;
+  if (
+    output.path !== project.paths.finalOutputPath
+    || typeof output.sha256 !== 'string'
+    || !/^[0-9a-f]{64}$/.test(output.sha256)
+    || typeof byteLength !== 'number'
+    || !Number.isSafeInteger(byteLength)
+    || byteLength <= 0
+    || typeof validation !== 'object'
+    || validation === null
+    || (validation as Record<string, unknown>).valid !== true
+  ) return undefined;
+  return {
+    round: project.revisionRound,
+    path: output.path,
+    sha256: output.sha256,
+    byteLength,
+    structuralValidationPassed: true,
+    recordedAt: now(),
+  };
+}
+
+function withNativeOutput(
+  project: TranslationProject,
+  output: NonNullable<TranslationProject['latestOutput']>,
+): TranslationProject {
+  const history = project.outputHistory.filter((entry) => entry.round !== output.round);
+  history.push(output);
+  return {
+    ...project,
+    latestOutput: output,
+    outputHistory: history.sort((left, right) => left.round - right.round),
+    status: 'completed',
+    activeStageId: undefined,
+    runtimeError: undefined,
+    revision: project.revision + 1,
+    updatedAt: output.recordedAt,
+  };
+}
+
 export function buildTranslationCoordinatorGoal(
   project: TranslationProject,
   model?: string,
 ): string {
-  const pinnedModel = model?.trim()
-    ? `the session model "${model.trim()}"`
-    : 'the model pinned to this session';
-  const sourceIdentity = project.source.sha256
-    ? `source SHA-256 ${project.source.sha256}`
-    : 'the verified immutable source receipt';
-
-  // Native Goal objectives are intentionally compact (the server caps them at
-  // 4,000 characters) and contain only stable project identity. Mutable paths,
-  // instruction versions and the full execution contract belong in the
-  // idempotent starter prompt below, not in the Goal recovery key.
-  return [
-    `Complete translation project ${project.projectId} (${sourceIdentity}) as a publication-ready Chinese book.`,
-    `Use only ${pinnedModel}; never switch providers or models.`,
-    `Follow the deterministic project ledger and quality policy for plan ${project.planFingerprint}; validate the final book and technical report before completing the goal.`,
-    'Treat ordinary user messages as live steering. Only an explicit Stop or Cancel action cancels the project.',
-  ].join(' ');
+  return buildTranslationCoordinatorPrompt(project, model);
 }
 
 export function buildTranslationCoordinatorPrompt(
   project: TranslationProject,
-  model?: string,
+  _model?: string,
 ): string {
-  const enabledQualityGates = [
-    'one translation pass and one review pass are mandatory',
-    project.workflow.secondTranslation ? 'a second translation pass is enabled' : null,
-    project.workflow.secondReview ? 'a second review pass is enabled' : null,
-    project.workflow.consistencyReview ? 'the consistency review is enabled' : null,
-  ].filter((entry): entry is string => entry !== null);
-  const modelPolicy = model?.trim()
-    ? `Use only the session model pinned as "${model.trim()}". Do not switch models or providers.`
-    : 'Use only the model pinned to this session. Do not switch models or providers.';
-  const qualityPolicyEnvelope = project.qualityPolicy?.policy
-    ? buildCoordinatorQualityPolicyEnvelope(project.qualityPolicy.policy)
-    : {
-        capability_mode: 'adjacent-chapter-fallback',
-        failure: 'No verified RAG capability receipt is present. Fail closed and require two independent reviews plus repair after each review.',
-      };
-  const runtimeEnvelope = {
-    project_id: project.projectId,
-    project_root: project.paths.projectRoot,
-    ledger_database: project.initialization?.ledgerSummary.databasePath,
-    manifest_path: project.initialization?.manifest.path,
-    source_copy: project.paths.sourceCopy,
-    final_output: project.paths.finalOutputPath,
-    final_report: project.paths.finalReportPath,
-    instruction_version: project.instructionVersion,
-    plan_fingerprint: project.planFingerprint,
-    execution_policy: project.executionPolicy,
-  };
-
-  return [
-    `Translate the complete source book for project "${project.name}" (${project.projectId}) into a publication-ready Chinese edition.`,
-    `The immutable verified source copy is "${project.paths.sourceCopy}" (upload provenance: "${project.source.sourcePath}"). The final output belongs at "${project.paths.finalOutputPath}".`,
-    `Selected quality gates: ${enabledQualityGates.join('; ')}. Maximum concurrent agents: ${project.maxAgents}.`,
-    modelPolicy,
-    `Deterministic runtime envelope (JSON): ${JSON.stringify(runtimeEnvelope)}. These program-owned paths, versions, fingerprints and limits are authoritative; do not infer replacements.`,
-    `Authoritative quality policy envelope (JSON): ${JSON.stringify(qualityPolicyEnvelope)}. Enforce it exactly; an absent, stale, or non-ready RAG receipt never unlocks the second-review gate.`,
-    'Act as the long-running translation Coordinator in this same session. Plan and delegate autonomously, preserve source and artifact provenance, and never overwrite an accepted immutable artifact in place.',
-    'Treat the deterministic SQLite project ledger as the sole scheduling and completion authority. Bash is Git Bash on Windows too: when BATCH_TRANSLATING_CLI is present, always invoke `"$BATCH_TRANSLATING_CLI" translation ...`. Only when that variable is absent may you use `batch-translating translation ...`. Never use PowerShell `$env:`, guess PATH, or select another executable.',
-    'Within that bundled CLI, use only the `translation project ...`, `translation ledger ...`, `translation tools ...`, and `translation rag ...` interfaces. Never hand-edit SQLite, shared translations, Canonical State, XHTML, or EPUB output.',
-    'Every claimed task, attempt, instruction, artifact, hash, lease, stale transition, cost, merge and quality gate must be recorded by the deterministic runtime. If a required ledger, artifact, quality gate, CLI capability, source hash, or validation receipt is unavailable, report the project as blocked instead of inventing success.',
-    'For every Agent or AgentSwarm dispatch, claim with leaseDurationMs of at least 7500000 so the lease covers the default worker timeout plus shutdown grace. Use `translation ledger task renew` with the exact taskId, attemptId, and workerId when ownership must be extended. Never recover or reassign an expired paid attempt until the previous worker and provider request are confirmed stopped; preserve uncertain work instead of risking duplicate charges.',
-    'After every Agent or AgentSwarm result, immediately record its input/output/cache tokens and usage through the ledger cost record-usage operation before accepting the result. When model pricing is unknown, record actual cost as 0 while preserving token usage and an explicit unknown-price warning; never omit usage or fabricate a price.',
-    'Ordinary user messages are live steering for this same session: acknowledge them, explain the affected scope and cost impact, keep unrelated work running, and continue the long-term goal without asking the user to type "continue".',
-    'A normal message is not Stop. Only an explicit Stop/Cancel action may hard-cancel work; otherwise prefer a safe atomic boundary and preserve valid completed work.',
-    'Do not use a fixed application-owned stage queue. Choose the next valid work from the goal, current session state, selected quality gates, budget, and project ledger.',
-    'Never mark the native goal complete merely because agents finished. Completion is accepted only after the application verifies the real final file and SHA-256 against the immutable source, current plan and instruction versions, required task/artifact receipts, duplicate-free deterministic merge, and SQLite integrity check.',
-  ].join('\n\n');
+  const root = project.paths.projectRoot.replace(/[\\/]+$/, '');
+  const separator = root.includes('\\') && !root.includes('/') ? '\\' : '/';
+  const taskBookPath = `${root}${separator}translation-task.txt`;
+  const targetLanguage = project.languages.target === 'zh-CN' ? '简体中文' : '英文';
+  return `请完成任务："${taskBookPath}"。所有工作语言使用${targetLanguage}。`;
 }
 
 /**
@@ -569,6 +572,20 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
         };
       }
       try {
+        const runtime = await host.getTranslationProjectStatus({
+          projectId: current.project.projectId,
+          projectRoot: current.project.paths.projectRoot,
+        });
+        const nativeOutput = nativeOutputMilestone(current.project, runtime);
+        if (nativeOutput !== undefined) {
+          return {
+            project: await updateTranslationProjectMetadata(
+              sessionId,
+              withNativeOutput(current.project, nativeOutput),
+            ),
+            completionRejected: false,
+          };
+        }
         const verification = await host.verifyTranslationCompletion({
           projectId: current.project.projectId,
           projectRoot: current.project.paths.projectRoot,
@@ -654,6 +671,10 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
     startingSessions.add(sessionId);
     try {
       await host.selectSession(sessionId);
+      // The create-session wire currently accepts permission_mode but does not
+      // apply it. Persist through the session profile before any goal action so
+      // a new start and a resumed continuation both truly run as `/auto`.
+      await host.ensureSessionPermission(sessionId, 'auto');
       const resolved = await ensureProjectModel(sessionId, sourceProject, model);
       let project = resolved.project;
       const pinnedModel = resolved.model;
@@ -670,8 +691,10 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
           'Translation project initialization is not verified; no goal or paid model request was started',
         );
       }
+      // Native `/goal <objective>` semantics: the durable goal and the first
+      // visible user turn carry the exact same text. There is no second starter
+      // instruction that can drift from the goal the engine is continuing.
       const objective = buildTranslationCoordinatorGoal(project, pinnedModel);
-      const coordinatorPrompt = buildTranslationCoordinatorPrompt(project, pinnedModel);
 
       let goal: AppGoal | null;
       try {
@@ -786,7 +809,10 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       }
       if (goal === null) return project;
       const submittedGoalId = goal.goalId;
-      if (goal.objective !== objective) {
+      if (
+        goal.objective !== objective
+        && launch.goalId !== goal.goalId
+      ) {
         throw new Error('The existing session goal does not belong to this translation launch');
       }
       if (goal.status === 'complete') {
@@ -814,7 +840,7 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       try {
         outcome = await host.submitPromptToSession(
           sessionId,
-          coordinatorPrompt,
+          objective,
           launch.attachments,
           {
             profile: TRANSLATION_COORDINATOR_PROFILE,
@@ -962,6 +988,7 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       const sourceReference = input.sourcePath?.trim() || `attachments/${sourceName}`;
       const project = createProjectMetadata({
         name: input.name,
+        languages: input.languages,
         model: pinnedModel,
         sourcePath: sourceReference,
         sourceSha256: uploaded.sha256,
@@ -994,7 +1021,7 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
       }
       const preparedProject = withCoordinatorLaunch(
         initializedProject,
-        createCoordinatorLaunch(initializedProject, [uploaded]),
+        createCoordinatorLaunch(initializedProject, []),
         'ready',
       );
       createdSession = await host.createSession({
@@ -1124,6 +1151,64 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
     }));
   }
 
+  async function persistInstructionReceipt(
+    sessionId: string,
+    sessionMessageId: string,
+    text: string,
+    scope: OverrideScope | undefined,
+  ): Promise<void> {
+    try {
+      const entry = findProjectSession(sessionId);
+      const acknowledgement = await host.recordTranslationInstruction({
+        projectId: entry.project.projectId,
+        projectRoot: entry.project.paths.projectRoot,
+        sessionMessageId,
+        message: text,
+        affectedScope: instructionAffectedScope(scope),
+        interruptMode: 'SOFT',
+      });
+      const live = findProjectSession(sessionId).project;
+      const cost = acknowledgement.costImpact ?? {};
+      const receipt = createTranslationInstructionReceipt({
+        eventId: `${live.projectId}:instruction:${acknowledgement.instructionVersion}`,
+        sessionMessageId,
+        instructionVersion: acknowledgement.instructionVersion,
+        message: text,
+        affectedScope: acknowledgement.affectedScope,
+        interruptMode: 'SOFT',
+        appliedAt: acknowledgement.acceptedAt,
+        continuedTaskIds: acknowledgement.continuedTaskIds,
+        cancelledTaskIds: acknowledgement.cancelledTaskIds,
+        interruptedTaskIds: acknowledgement.interruptedTaskIds ?? [],
+        staleTaskIds: acknowledgement.staleTaskIds,
+        replacementTaskIds: acknowledgement.replacementTaskIds ?? [],
+        costImpact: {
+          actualCostMicrosDelta: nonNegativeInteger(
+            cost.actualCostMicrosDelta ?? cost.actual_cost_micros_delta,
+          ),
+          discardedCostMicros: nonNegativeInteger(
+            cost.discardedCostMicros ?? cost.discarded_cost_micros,
+          ),
+          estimatedAdditionalCostMicros: nonNegativeInteger(
+            cost.estimatedAdditionalCostMicros ?? cost.estimated_additional_cost_micros,
+          ),
+          additionalPaidTaskCount: nonNegativeInteger(
+            cost.additionalPaidTaskCount ?? cost.additional_paid_task_count,
+          ),
+          ...(typeof cost.reason === 'string' && cost.reason.trim()
+            ? { reason: cost.reason.trim() }
+            : {}),
+        },
+      });
+      const merged = mergeTranslationInstructionReceipt(live, receipt);
+      await updateTranslationProjectMetadata(sessionId, { ...merged, runtimeError: undefined });
+    } catch (error) {
+      // Conversation delivery is authoritative. Ledger bookkeeping is useful
+      // project evidence, but it must never hide or block a user's normal chat.
+      host.pushOperationFailure('translationInstructionRecord', error, { sessionId });
+    }
+  }
+
   async function applyUserOverride(
     sessionId: string,
     input: ApplyTranslationOverrideRequest,
@@ -1144,105 +1229,71 @@ export function useTranslationCoordinator(host: TranslationCoordinatorHost) {
           await setProjectStatus(sessionId, 'running');
         }
       }
-      // useWorkspaceState.steerPrompt is the native conversation path: it sends
-      // a normal turn while idle, or submits+steers into the active turn without
-      // aborting it. The user's text is kept verbatim; there is no phase queue or
-      // hidden wrapper that delays Coordinator visibility.
+      if (entry.project.status === 'completed') {
+        try {
+          await host.controlSessionGoal(sessionId, 'cancel');
+        } catch (error) {
+          host.pushOperationFailure('translationRevisionGoalCleanup', error, { sessionId });
+        }
+        const nextRound = entry.project.revisionRound + 1;
+        let revisionGoal: AppGoal | null = null;
+        try {
+          await host.setSessionGoal(
+            sessionId,
+            `Apply revision round ${nextRound} to ${entry.project.name} in this same session. Preserve earlier output versions and produce a validated updated book.`,
+          );
+          revisionGoal = await host.getSessionGoal(sessionId);
+        } catch (error) {
+          // Goal creation is not idempotent. A lost response may still have
+          // created it, so recover by reading before deciding that it failed.
+          try {
+            revisionGoal = await host.getSessionGoal(sessionId);
+          } catch {
+            revisionGoal = null;
+          }
+          if (revisionGoal === null) throw error;
+        }
+        if (revisionGoal === null) {
+          throw new Error('The revision goal could not be recovered');
+        }
+        const revisionProject: TranslationProject = {
+          ...entry.project,
+          revisionRound: nextRound,
+          status: 'running',
+          runtimeError: undefined,
+          revision: entry.project.revision + 1,
+          updatedAt: now(),
+        };
+        await updateTranslationProjectMetadata(
+          sessionId,
+          revisionProject.coordinatorLaunch === undefined
+            ? revisionProject
+            : withCoordinatorLaunch(
+                revisionProject,
+                {
+                  ...revisionProject.coordinatorLaunch,
+                  status: 'accepted',
+                  goalId: revisionGoal.goalId,
+                  updatedAt: now(),
+                },
+                'running',
+              ),
+        );
+      }
+      // Match Kimi Code ctrl+s: while a native goal is active, submit+steer even
+      // during the idle-looking continuation boundary. This injects the user's
+      // text without aborting the assistant stream or an active tool call.
       const sessionMessageId = clientReceiptId('translation_instruction');
-      const steerPromise = host.steerPrompt(
+      await host.steerPrompt(
         sessionId,
         text,
         undefined,
-        { permissionMode: 'auto' },
+        { permissionMode: 'auto', throwOnFailure: true, goalActive: true },
       );
-      const instructionPromise = host.recordTranslationInstruction({
-        projectId: entry.project.projectId,
-        projectRoot: entry.project.paths.projectRoot,
-        sessionMessageId,
-        message: text,
-        affectedScope: instructionAffectedScope(input.scope),
-        interruptMode: 'SOFT',
-      });
-      const [steerResult, instructionResult] = await Promise.allSettled([
-        steerPromise,
-        instructionPromise,
-      ]);
-
-      if (instructionResult.status === 'fulfilled') {
-        const live = findProjectSession(sessionId).project;
-        const acknowledgement = instructionResult.value;
-        const cost = acknowledgement.costImpact ?? {};
-        const receipt = createTranslationInstructionReceipt({
-          eventId: `${live.projectId}:instruction:${acknowledgement.instructionVersion}`,
-          sessionMessageId,
-          instructionVersion: acknowledgement.instructionVersion,
-          message: text,
-          affectedScope: acknowledgement.affectedScope,
-          interruptMode: 'SOFT',
-          appliedAt: acknowledgement.acceptedAt,
-          continuedTaskIds: acknowledgement.continuedTaskIds,
-          cancelledTaskIds: acknowledgement.cancelledTaskIds,
-          interruptedTaskIds: acknowledgement.interruptedTaskIds ?? [],
-          staleTaskIds: acknowledgement.staleTaskIds,
-          replacementTaskIds: acknowledgement.replacementTaskIds ?? [],
-          costImpact: {
-            actualCostMicrosDelta: nonNegativeInteger(
-              cost.actualCostMicrosDelta ?? cost.actual_cost_micros_delta,
-            ),
-            discardedCostMicros: nonNegativeInteger(
-              cost.discardedCostMicros ?? cost.discarded_cost_micros,
-            ),
-            estimatedAdditionalCostMicros: nonNegativeInteger(
-              cost.estimatedAdditionalCostMicros ?? cost.estimated_additional_cost_micros,
-            ),
-            additionalPaidTaskCount: nonNegativeInteger(
-              cost.additionalPaidTaskCount ?? cost.additional_paid_task_count,
-            ),
-            ...(typeof cost.reason === 'string' && cost.reason.trim()
-              ? { reason: cost.reason.trim() }
-              : {}),
-          },
-        });
-        const merged = mergeTranslationInstructionReceipt(live, receipt);
-        await updateTranslationProjectMetadata(sessionId, {
-          ...merged,
-          runtimeError: undefined,
-        });
-      } else {
-        const reason = instructionResult.reason instanceof Error
-          ? instructionResult.reason.message
-          : String(instructionResult.reason);
-        const live = findProjectSession(sessionId).project;
-        try {
-          await updateTranslationProjectMetadata(sessionId, {
-            ...live,
-            revision: live.revision + 1,
-            updatedAt: now(),
-            runtimeError: {
-              phase: 'instruction',
-              code: 'INSTRUCTION_NOT_RECORDED',
-              message: `Correction is visible in the Coordinator session but was not recorded in the project ledger: ${reason}`,
-              retryable: true,
-              occurredAt: now(),
-              details: { sessionMessageId },
-            },
-          });
-        } catch (persistError) {
-          host.pushOperationFailure('translationInstructionFailurePersist', persistError, { sessionId });
-        }
-        const error = new Error(
-          `Correction was sent to the Coordinator but was not recorded in the project ledger: ${reason}`,
-        );
-        setError(sessionId, error);
-        throw error;
-      }
-      if (steerResult.status === 'rejected') {
-        const error = steerResult.reason instanceof Error
-          ? steerResult.reason
-          : new Error(String(steerResult.reason));
-        setError(sessionId, error);
-        throw error;
-      }
+      void serializeTransition(
+        sessionId,
+        () => persistInstructionReceipt(sessionId, sessionMessageId, text, input.scope),
+      );
     });
   }
 

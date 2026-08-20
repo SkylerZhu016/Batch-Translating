@@ -361,6 +361,10 @@ watch(
             <Checkbox :model-value="true" disabled>{{ t('translation.settings.tools.bash') }}</Checkbox>
           </div>
           <div class="settings-view__tool">
+            <Icon name="user" size="md" />
+            <Checkbox :model-value="true" disabled>{{ t('translation.settings.tools.agent') }}</Checkbox>
+          </div>
+          <div class="settings-view__tool">
             <Icon name="git-fork" size="md" />
             <Checkbox :model-value="true" disabled>{{ t('translation.settings.tools.agentSwarm') }}</Checkbox>
           </div>

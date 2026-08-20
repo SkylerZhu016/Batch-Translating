@@ -4,9 +4,10 @@
      the model works through the stage. Built for users and debuggers to tell
      "model still thinking" from "model stuck". -->
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppMessage, AppMessageContent } from '../../api/types';
+import { isDisplayableConversationMessage } from '../../lib/messageVisibility';
 import Badge from '../ui/Badge.vue';
 import Icon from '../ui/Icon.vue';
 import CorrectionComposer from './CorrectionComposer.vue';
@@ -21,36 +22,56 @@ const props = defineProps<{
   commandValue: string;
   /** True while a correction submission is in flight. */
   busy?: boolean;
+  /** The main conversation has a submitted prompt or active turn; manual
+   * compaction is only safe after that work reaches a terminal boundary. */
+  conversationBusy?: boolean;
+  /** The daemon is currently compacting this session. */
+  compacting?: boolean;
 }>();
 
 const emit = defineEmits<{
   'update:commandValue': [value: string];
   send: [];
+  compact: [];
 }>();
 
 const scrollRef = ref<HTMLElement | null>(null);
+const displayMessages = computed(() => props.messages.filter(isDisplayableConversationMessage));
+const compactDisabled = computed(() => (
+  props.conversationBusy === true
+  || props.compacting === true
+  || displayMessages.value.length === 0
+));
+const compactTitle = computed(() => {
+  if (props.compacting) return t('translation.agentConsole.compacting');
+  if (props.conversationBusy) return t('translation.agentConsole.compactAfterTurn');
+  if (displayMessages.value.length === 0) return t('translation.agentConsole.compactEmpty');
+  return t('translation.agentConsole.compactHint');
+});
 
 /** Show the manual "jump to bottom" affordance once the user has scrolled up. */
 const showScrollToBottom = ref(false);
+const followingLatest = ref(true);
 const SCROLL_NEAR_BOTTOM_PX = 48;
 
 function updateScrollToBottomState(): void {
   const el = scrollRef.value;
   if (!el) return;
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_NEAR_BOTTOM_PX;
+  followingLatest.value = nearBottom;
   showScrollToBottom.value = !nearBottom;
 }
 
 function scrollConsoleToBottom(): void {
   const el = scrollRef.value;
   if (!el) return;
+  followingLatest.value = true;
   el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
 }
 
 onMounted(async () => {
   // The console is v-if mounted whenever the view is switched in.
-  // Reposition to the latest activity on every entrance. New messages never
-  // move the viewport while the user is reading.
+  // Reposition to the latest activity on every entrance.
   await nextTick();
   const el = scrollRef.value;
   if (el) {
@@ -58,6 +79,24 @@ onMounted(async () => {
     updateScrollToBottomState();
   }
 });
+
+watch(
+  () => displayMessages.value.length,
+  async () => {
+    const shouldFollow = followingLatest.value;
+    await nextTick();
+    const el = scrollRef.value;
+    if (!el) return;
+    if (shouldFollow) {
+      el.scrollTop = el.scrollHeight;
+      followingLatest.value = true;
+      showScrollToBottom.value = false;
+    } else {
+      // Preserve the user's reading position and make new activity discoverable.
+      showScrollToBottom.value = true;
+    }
+  },
+);
 
 function formatTime(value: string): string {
   const date = new Date(value);
@@ -74,6 +113,17 @@ function summarize(value: unknown, max = 300): string {
   try {
     const text = JSON.stringify(value);
     return text.length > max ? `${text.slice(0, max)}…` : text;
+  } catch {
+    return String(value);
+  }
+}
+
+/** Full readable output shown only after the user expands a tool result. */
+function formatDetail(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
   } catch {
     return String(value);
   }
@@ -139,9 +189,23 @@ watch(
         <Icon name="terminal" size="md" />
         <h2>{{ t('translation.agentConsole.title') }}</h2>
       </div>
-      <div class="agent-console__status">
-        <span class="agent-console__live" :class="{ 'is-live': running }" />
-        {{ running ? t('translation.agentConsole.live') : t('translation.agentConsole.idle') }}
+      <div class="agent-console__header-actions">
+        <button
+          type="button"
+          class="agent-console__compact"
+          :disabled="compactDisabled"
+          :title="compactTitle"
+          @click="emit('compact')"
+        >
+          <Icon name="archive" size="sm" />
+          {{ compacting
+            ? t('translation.agentConsole.compacting')
+            : t('translation.agentConsole.compact') }}
+        </button>
+        <div class="agent-console__status">
+          <span class="agent-console__live" :class="{ 'is-live': running }" />
+          {{ running ? t('translation.agentConsole.live') : t('translation.agentConsole.idle') }}
+        </div>
       </div>
     </header>
 
@@ -150,12 +214,12 @@ watch(
       class="agent-console__stream"
       @scroll.passive="updateScrollToBottomState"
     >
-      <p v-if="messages.length === 0" class="agent-console__empty">
+      <p v-if="displayMessages.length === 0" class="agent-console__empty">
         {{ t('translation.agentConsole.empty') }}
       </p>
 
       <article
-        v-for="(message, messageIndex) in messages"
+        v-for="(message, messageIndex) in displayMessages"
         :key="message.id || `${message.role}:${messageIndex}`"
         class="agent-console__message"
         :class="`agent-console__message--${message.role}`"
@@ -180,30 +244,32 @@ watch(
             </details>
 
             <!-- Tool call -->
-            <div v-else-if="isToolUse(block)" class="agent-console__tool">
-              <div class="agent-console__tool-head">
-                <Icon name="wrench" size="sm" />
-                <strong>{{ block.toolName }}</strong>
-                <span class="agent-console__tool-state">
-                  {{ resultByCallId.has(block.toolCallId)
-                    ? t('translation.agentConsole.toolDone')
-                    : t('translation.agentConsole.toolRunning') }}
+            <details v-else-if="isToolUse(block)" class="agent-console__tool">
+              <summary class="agent-console__tool-head">
+                <span class="agent-console__tool-summary">
+                  <Icon name="wrench" size="sm" />
+                  <strong>{{ block.toolName }}</strong>
+                  <span class="agent-console__tool-state">
+                    {{ resultByCallId.has(block.toolCallId)
+                      ? t('translation.agentConsole.toolDone')
+                      : t('translation.agentConsole.toolRunning') }}
+                  </span>
                 </span>
-              </div>
+              </summary>
               <pre class="agent-console__code">{{ summarize(block.input) }}</pre>
-            </div>
+            </details>
 
             <!-- Tool result -->
-            <div
+            <details
               v-else-if="isToolResult(block)"
               class="agent-console__result"
               :class="{ 'is-error': block.isError }"
             >
-              <span class="agent-console__result-label">
+              <summary class="agent-console__result-label">
                 {{ block.isError ? t('translation.agentConsole.resultError') : t('translation.agentConsole.result') }}
-              </span>
-              <pre class="agent-console__code">{{ summarize(block.output) }}</pre>
-            </div>
+              </summary>
+              <pre class="agent-console__code">{{ formatDetail(block.output) }}</pre>
+            </details>
 
             <!-- Other block kinds (images / files / unknown) -->
             <div v-else class="agent-console__other">
@@ -219,6 +285,7 @@ watch(
       type="button"
       class="agent-console__scroll-bottom"
       aria-label="Scroll to bottom"
+      title="New activity — jump to latest"
       @click="scrollConsoleToBottom"
     >
       <Icon name="chevron-down" size="md" />
@@ -272,6 +339,33 @@ watch(
   font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
+.agent-console__header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.agent-console__compact {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.agent-console__compact:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+.agent-console__compact:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
 .agent-console__live {
   width: 8px;
   height: 8px;
@@ -317,8 +411,8 @@ watch(
   background: var(--color-surface);
   color: var(--color-text);
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  z-index: 2;
+  box-shadow: var(--shadow-md);
+  z-index: var(--z-sticky);
 }
 .agent-console__scroll-bottom:hover {
   background: var(--color-surface-sunken);
@@ -400,15 +494,21 @@ watch(
   overflow: hidden;
 }
 .agent-console__tool-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  display: list-item;
   padding: var(--space-2) var(--space-3);
+  cursor: pointer;
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-line);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--color-text);
+}
+.agent-console__tool-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: calc(100% - var(--space-2));
+  vertical-align: middle;
 }
 .agent-console__tool-state {
   margin-left: auto;
@@ -417,12 +517,17 @@ watch(
   color: var(--color-text-muted);
 }
 .agent-console__result-label {
-  display: block;
+  display: list-item;
   padding: var(--space-2) var(--space-3);
+  cursor: pointer;
   font-family: var(--font-ui);
   font-size: var(--text-xs);
   color: var(--color-text-muted);
   border-bottom: 1px solid var(--color-line);
+}
+.agent-console__tool:not([open]) > .agent-console__tool-head,
+.agent-console__result:not([open]) > .agent-console__result-label {
+  border-bottom: 0;
 }
 .agent-console__result.is-error {
   border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-line));

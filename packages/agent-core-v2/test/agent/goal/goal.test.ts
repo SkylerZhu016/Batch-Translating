@@ -425,8 +425,11 @@ describe('AgentGoalService', () => {
       await goals.markComplete({ reason: 'done' }, 'model');
       const completion = events.find((event) => event.change?.kind === 'completion')?.change;
       expect(completion).toMatchObject({ kind: 'completion', status: 'complete', reason: 'done' });
-      expect(goals.getGoal().goal).toBeNull();
-      expect(events.at(-1)?.snapshot).toBeNull();
+      expect(goals.getGoal().goal).toMatchObject({ status: 'complete', terminalReason: 'done' });
+      expect(events.at(-1)?.snapshot).toMatchObject({
+        status: 'complete',
+        terminalReason: 'done',
+      });
     });
 
     it('keeps blocked goals resumable', async () => {
@@ -482,7 +485,7 @@ describe('AgentGoalService', () => {
       expect(ctx.llmCalls).toHaveLength(3);
       expect(continuationTurnIds).toEqual(endedTurnIds);
       expect(endedTurnReasons).toEqual(['completed', 'completed']);
-      expect(goals.getGoal().goal).toBeNull();
+      expect(goals.getGoal().goal?.status).toBe('complete');
     });
 
     it('pauseOnInterrupt parks active goals and no-ops for stopped goals', async () => {
@@ -600,7 +603,6 @@ describe('AgentGoalService', () => {
         'goal_status_changed',
         'goal_status_changed',
         'goal_status_changed',
-        'goal_cleared',
       ]);
       expect(telemetry[0]?.properties).toEqual({ agent_id: 'main', actor: 'user', replace: true });
       expect(telemetry[1]?.properties).toMatchObject({ actor: 'model', has_token_budget: true });
@@ -1361,7 +1363,7 @@ describe('AgentGoalService core workflow hooks', () => {
     endTurn(eventBus, continuation);
 
     expect(completed).toMatchObject({ status: 'complete', turnsUsed: 2 });
-    expect(goals.getGoal().goal).toBeNull();
+    expect(goals.getGoal().goal).toMatchObject({ status: 'complete', turnsUsed: 2 });
     expect(loopService.launches).toHaveLength(1);
   });
 
@@ -1522,7 +1524,7 @@ describe('AgentGoalService core workflow hooks', () => {
     await loopService.hooks.onDidFinishStep.run(afterStep);
 
     expect(loopService.hasPendingRequests()).toBe(true);
-    expect(goals.getGoal().goal).toBeNull();
+    expect(goals.getGoal().goal?.status).toBe('complete');
     expect(loopService.launches).toEqual([]);
     expect(JSON.stringify(context.get())).not.toContain('goal_completion_summary');
     expect(JSON.stringify(context.get())).not.toContain('goal_blocked_reason');
@@ -2266,7 +2268,7 @@ describe('AgentGoalService goal outcome tool result flow', () => {
           args: expect.objectContaining({ reason: 'failed' }),
         }),
       );
-      expect((await ctx.rpc.getGoal({})).goal).toBeNull();
+      expect((await ctx.rpc.getGoal({})).goal?.status).toBe('complete');
       const history = ctx.get(IAgentContextMemoryService).get();
       expect(JSON.stringify(history)).toContain('Write a concise final message');
       expect(JSON.stringify(history)).not.toContain('This summary should not run.');

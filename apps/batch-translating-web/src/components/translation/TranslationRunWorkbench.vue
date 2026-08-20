@@ -6,7 +6,6 @@ import EmptyState from '../ui/EmptyState.vue';
 import Icon from '../ui/Icon.vue';
 import AgentSwarmPanel from './AgentSwarmPanel.vue';
 import ChapterProgressPanel from './ChapterProgressPanel.vue';
-import TranslationStageRail from './TranslationStageRail.vue';
 import type {
   TranslationAgent,
   TranslationChapter,
@@ -43,6 +42,10 @@ const { t } = useI18n();
             completed: project.completedChapters,
             total: project.totalChapters,
             agents: project.agentCount,
+            round: project.revisionRound,
+            target: project.targetLanguage === 'zh-CN'
+              ? t('translation.create.languageChinese')
+              : t('translation.create.languageEnglish'),
           }) }}</p>
         </div>
         <Badge
@@ -78,8 +81,6 @@ const { t } = useI18n();
       </div>
     </header>
 
-    <TranslationStageRail :stages="stages" />
-
     <div class="run-workbench__panels">
       <AgentSwarmPanel :agents="agents" />
       <ChapterProgressPanel :chapters="chapters" />
@@ -99,7 +100,7 @@ const { t } = useI18n();
 <style scoped>
 .run-workbench {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: var(--space-3);
   height: 100%;
   min-width: 0;

@@ -52,6 +52,10 @@ export interface RuntimeTranslationProject {
   readonly schemaVersion: number;
   readonly projectId: string;
   readonly name: string;
+  readonly languages: {
+    readonly source: string;
+    readonly target: 'zh-CN' | 'en';
+  };
   readonly model: string;
   readonly revision: number;
   readonly createdAt: string;

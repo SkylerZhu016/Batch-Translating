@@ -34,15 +34,28 @@ export interface UsageStatus {
 }
 
 export interface UsageRecordedContext {
+  readonly requestId: string;
   readonly model: string;
+  readonly modelId?: string;
+  readonly providerId?: string;
   readonly usage: Readonly<TokenUsage>;
   readonly source?: AgentLLMRequestSource;
+}
+
+export interface UsageResolvedModelIdentity {
+  readonly modelId: string;
+  readonly providerId: string;
 }
 
 export interface IAgentUsageService {
   readonly _serviceBrand: undefined;
 
-  record(model: string, usage: TokenUsage, source?: AgentLLMRequestSource): void;
+  record(
+    model: string,
+    usage: TokenUsage,
+    source?: AgentLLMRequestSource,
+    identity?: UsageResolvedModelIdentity,
+  ): void;
   status(): UsageStatus;
 
   readonly onDidRecord: Event<UsageRecordedContext>;

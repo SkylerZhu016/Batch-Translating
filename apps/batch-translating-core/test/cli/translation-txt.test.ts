@@ -313,7 +313,7 @@ describe('deterministic TXT assembly', () => {
 });
 
 describe('TXT CLI registration', () => {
-  it('registers hidden translation txt commands and emits JSON', async () => {
+  it('registers translation txt commands and emits JSON', async () => {
     const source = join(temporaryDirectory, 'book.txt');
     await writeFile(source, BOOK, 'utf8');
     const stdout: string[] = [];
@@ -331,7 +331,11 @@ describe('TXT CLI registration', () => {
     expect(stderr).toEqual([]);
     expect(exitCodes).toEqual([]);
     expect(JSON.parse(stdout.join(''))).toMatchObject({ valid: true, chapterCount: 5 });
-    expect(program.helpInformation()).not.toContain('translation');
+    const help = program.helpInformation();
+    expect(help).toContain('translation');
+    expect(help).toContain(
+      '批量翻译工程命令 / Auditable batch translation project commands.',
+    );
   });
 });
 

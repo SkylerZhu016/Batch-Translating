@@ -82,6 +82,7 @@ import type { PayloadOf } from '#/wire/types';
 import {
   IAgentLLMRequesterService,
   type AgentLLMRequestFinish,
+  type AgentLLMRequestGuard,
   type AgentLLMRequestLogFields,
   type AgentLLMRequestOverrides,
   type AgentLLMRequestPartHandler,
@@ -187,6 +188,8 @@ export const llmRequesterEmittedThinkingEffortWarningsKey = defineState<Set<stri
 export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   declare readonly _serviceBrand: undefined;
 
+  private readonly requestGuards = new Set<AgentLLMRequestGuard>();
+
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
     @IAgentContextProjectorService private readonly projector: IAgentContextProjectorService,
@@ -242,6 +245,11 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     return { thinkingEffort: config.resolved.thinkingLevel };
   }
 
+  registerRequestGuard(guard: AgentLLMRequestGuard) {
+    this.requestGuards.add(guard);
+    return { dispose: () => this.requestGuards.delete(guard) };
+  }
+
   async request(
     overrides: AgentLLMRequestOverrides = {},
     onPart: AgentLLMRequestPartHandler = noopOnPart,
@@ -268,6 +276,8 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     onPart: AgentLLMRequestPartHandler,
     signal: AbortSignal | undefined,
   ): Promise<AgentLLMRequestFinish> {
+    signal?.throwIfAborted();
+    for (const guard of this.requestGuards) await guard(overrides.source);
     signal?.throwIfAborted();
     const startedAt = Date.now();
     trace.set(undefined);
@@ -486,7 +496,10 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         );
       }
 
-      this.usage.record(request.modelAlias, usage ?? emptyUsage(), request.source);
+      this.usage.record(request.modelAlias, usage ?? emptyUsage(), request.source, {
+        modelId: request.model.id,
+        providerId: request.model.providerName,
+      });
       // Only a stream that actually reported usage may write a measured
       // anchor — recording emptyUsage() zeros would zero the context size and
       // silence compaction for providers without usage reporting.

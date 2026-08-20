@@ -5,7 +5,7 @@
 
 import { computed, ref, type Ref } from 'vue';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AppApprovalRequest, AppQuestionRequest, AppSession, AppTask } from '../src/api/types';
+import type { AppApprovalRequest, AppMessage, AppQuestionRequest, AppSession, AppTask } from '../src/api/types';
 import { DaemonApiError } from '../src/api/errors';
 import { createInitialState } from '../src/api/daemon/eventReducer';
 import { mergeWorkspaces } from '../src/lib/mergeWorkspaces';
@@ -23,6 +23,7 @@ const apiMock = vi.hoisted(() => ({
   exportSession: vi.fn(),
   updateSession: vi.fn(),
   submitPrompt: vi.fn(),
+  steerPrompts: vi.fn(),
   respondQuestion: vi.fn(),
   respondApproval: vi.fn(),
   dismissQuestion: vi.fn(),
@@ -1577,6 +1578,8 @@ describe('useWorkspaceState — snapshot prompt recovery', () => {
   beforeEach(() => {
     apiMock.submitPrompt.mockReset();
     apiMock.submitPrompt.mockResolvedValue({ promptId: 'prompt_new' });
+    apiMock.steerPrompts.mockReset();
+    apiMock.steerPrompts.mockResolvedValue({ steered: true, promptIds: ['prompt_new'] });
     // Module-level flush failure budget must not leak between tests.
     forgetLocalTurnState('sess_1');
   });
@@ -1748,6 +1751,52 @@ describe('useWorkspaceState — snapshot prompt recovery', () => {
     await ws.steerPrompt('live text', [{ fileId: 'f_live', kind: 'image' }]);
 
     expect(state.queuedBySession.sess_1 ?? []).toEqual([]);
+  });
+
+  it('ignores only the prompt-not-found race after a successful steer submit', async () => {
+    const state = createState();
+    state.inFlightBySession = { sess_1: true };
+    const deps = promptDeps();
+    const ws = useWorkspaceState(state, deps);
+    apiMock.submitPrompt.mockResolvedValue({ promptId: 'prompt_new', status: 'queued' });
+    apiMock.steerPrompts.mockRejectedValue(
+      new DaemonApiError({ code: 40402, msg: 'no active prompt to steer into', requestId: 'r' }),
+    );
+
+    await expect(
+      ws.steerPromptToSession('sess_1', 'continue', undefined, { throwOnFailure: true }),
+    ).resolves.toBeUndefined();
+
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new DaemonApiError({ code: 40101, msg: 'Unauthorized', requestId: 'r-auth' }),
+    new DaemonApiError({ code: 50001, msg: 'internal error', requestId: 'r-server' }),
+    new TypeError('fetch failed'),
+  ])('reports and rethrows a genuine steer failure when strict handling is enabled', async (err) => {
+    const state = createState();
+    state.inFlightBySession = { sess_1: true };
+    state.queuedBySession = { sess_1: [{ text: 'queued', attachments: undefined }] };
+    let messages: AppMessage[] = [];
+    const deps = promptDeps({
+      updateSessionMessages: vi.fn((_sessionId, update) => {
+        messages = update(messages);
+      }),
+    });
+    const ws = useWorkspaceState(state, deps);
+    apiMock.submitPrompt.mockResolvedValue({ promptId: 'prompt_new', status: 'queued' });
+    apiMock.steerPrompts.mockRejectedValue(err);
+
+    await expect(
+      ws.steerPromptToSession('sess_1', 'continue', undefined, { throwOnFailure: true }),
+    ).rejects.toBe(err);
+
+    expect(deps.pushOperationFailure).toHaveBeenCalledWith('steer', err, { sessionId: 'sess_1' });
+    expect(state.queuedBySession.sess_1 ?? []).toEqual([]);
+    expect(messages).toEqual([
+      expect.objectContaining({ role: 'user', promptId: 'prompt_new' }),
+    ]);
   });
 
   it('restores the queue when an idle steer falls back to a normal send that fails', async () => {

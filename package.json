@@ -1,6 +1,6 @@
 {
-  "name": "@moonshot-ai/monorepo",
-  "version": "0.1.1",
+  "name": "batch-translating",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -16,7 +16,6 @@
     "dev:v2": "pnpm -C apps/kimi-code run dev:kap-server:multi",
     "build:plugin-marketplace": "pnpm -C apps/kimi-code run build:plugin-marketplace",
     "vis": "pnpm -C apps/vis run dev",
-    "dev:docs": "pnpm -C docs install --ignore-workspace && pnpm -C docs run dev",
     "batch:dev:web": "pnpm -C apps/batch-translating-web run dev",
     "batch:dev:server": "pnpm -C apps/batch-translating-core run dev:server",
     "batch:build": "pnpm -C apps/batch-translating-core run build",
@@ -24,6 +23,7 @@
     "batch:test": "pnpm -C apps/batch-translating-web run test && pnpm -C apps/batch-translating-core exec vitest run",
     "batch:style": "pnpm -C apps/batch-translating-web run check:style",
     "batch:desktop:build": "pnpm -C apps/batch-translating-desktop exec tauri build",
+    "batch:desktop:release": "node scripts/build-desktop-release.mjs",
     "typecheck": "pnpm run build:packages && pnpm -r --filter './packages/*' run typecheck && pnpm --filter @moonshot-ai/kimi-code run typecheck && pnpm --filter kimi-code run typecheck && pnpm --filter @moonshot-ai/vis-server run typecheck && pnpm --filter @moonshot-ai/vis-web run typecheck",
     "lint": "oxlint --type-aware",
     "lint:fix": "pnpm run lint --fix",
@@ -32,39 +32,21 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "clean": "pnpm -r run clean",
-    "changeset": "changeset",
-    "version": "changeset version",
-    "version:release": "changeset version",
-    "publish": "pnpm run typecheck && pnpm run lint && pnpm run sherif && pnpm run test && pnpm run build && pnpm run lint:pkg && changeset publish",
-    "prepare": "simple-git-hooks"
+    "clean": "pnpm -r run clean"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.2",
-    "@changesets/changelog-github": "0.7.0",
-    "@changesets/cli": "2.30.0",
     "@microsoft/api-extractor": "7.58.7",
     "@types/node": "^22.15.3",
     "@vitest/coverage-v8": "4.1.4",
-    "lint-staged": "16.4.0",
     "oxlint": "1.59.0",
     "oxlint-tsgolint": "0.20.0",
-    "pkg-pr-new": "0.0.75",
     "publint": "0.3.18",
     "sherif": "1.11.1",
-    "simple-git-hooks": "2.13.1",
     "tsdown": "0.22.0",
     "tsx": "^4.21.0",
     "typescript": "6.0.2",
     "vitest": "4.1.4"
-  },
-  "simple-git-hooks": {
-  },
-  "lint-staged": {
-    "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}": [
-      "oxlint --fix --quiet",
-      "oxlint --type-aware --quiet"
-    ]
   },
   "engines": {
     "node": "24.15.0"

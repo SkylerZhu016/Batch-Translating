@@ -1,5 +1,6 @@
 import {
   TranslationProjectLedger,
+  type BudgetStatus,
   type DeterministicReportData,
   type IntegrityReport,
   type ProjectRecord,
@@ -34,6 +35,7 @@ import {
   link,
   mkdir,
   open,
+  readdir,
   readFile,
   rm,
   stat,
@@ -48,6 +50,11 @@ import {
 } from 'node:path';
 
 import type { ServerLogger } from '../pinoLoggerService';
+import {
+  buildLegacyTranslationTaskBook,
+  buildTranslationTaskBook,
+  buildTranslationTaskBookV3,
+} from './taskBook';
 import type {
   AppliedProjectInstruction,
   ApplyProjectInstructionInput,
@@ -70,6 +77,7 @@ const PROJECT_METADATA_FILE = 'project.runtime.json';
 const DATABASE_FILE = 'translation.sqlite3';
 const MODEL_DESTINATION_DIRECTORY = 'bge-m3';
 const RAG_RUNTIME_ENV = 'BATCH_TRANSLATING_RAG_RUNTIME';
+const USAGE_OUTBOX_DIRECTORY = 'translation-usage-outbox';
 const DEFAULT_FINAL_TASK_TYPES = [
   'render',
   'final-render',
@@ -92,10 +100,26 @@ export class TranslationRuntimeError extends Error {
   }
 }
 
+export interface ModelTokenPricing {
+  readonly currency: 'USD';
+  readonly inputUsdPerMillion: number;
+  readonly outputUsdPerMillion: number;
+  readonly cacheReadUsdPerMillion?: number;
+  readonly cacheCreationUsdPerMillion?: number;
+}
+
+export interface ModelPricingLookup {
+  readonly modelId: string;
+  readonly providerId: string;
+}
+
 interface TranslationRuntimeOptions {
   readonly homeDir: string;
   readonly fileService: IFileService;
   readonly logger: ServerLogger;
+  readonly resolveModelPricing?: (
+    input: ModelPricingLookup,
+  ) => ModelTokenPricing | undefined | Promise<ModelTokenPricing | undefined>;
 }
 
 interface ProjectHandle {
@@ -148,9 +172,11 @@ export interface TranslationAgentUsageIncrement {
   readonly sessionId: string;
   readonly agentId: string;
   readonly sessionCustom?: Readonly<Record<string, unknown>>;
-  readonly sourceType: 'turn';
-  readonly turnId: number;
-  readonly step: number;
+  readonly requestId: string;
+  readonly sourceType: 'turn' | 'operation';
+  readonly requestKind?: string;
+  readonly turnId?: number;
+  readonly step?: number;
   readonly modelId: string;
   readonly providerId: string;
   readonly usage: {
@@ -159,6 +185,35 @@ export interface TranslationAgentUsageIncrement {
     readonly inputCacheRead: number;
     readonly inputCacheCreation: number;
   };
+}
+
+export interface TranslationBudgetNotification {
+  readonly code: 'translation-soft-budget-reached' | 'translation-hard-budget-reached';
+  readonly message: string;
+}
+
+export interface TranslationAgentUsageReceipt {
+  readonly budget: BudgetStatus;
+  readonly notification?: TranslationBudgetNotification;
+}
+
+interface PersistedUsageOutboxEntry {
+  readonly schemaVersion: 1;
+  readonly eventId: string;
+  readonly projectId: string;
+  readonly projectRoot: string;
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly turnId: string;
+  readonly step: number;
+  readonly modelId: string;
+  readonly providerId: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedTokens: number;
+  readonly priceSnapshot: Record<string, unknown>;
+  readonly actualCostMicros: number;
+  readonly stage: 'coordinator' | 'translation-subagent' | 'context-maintenance';
 }
 
 /**
@@ -170,12 +225,14 @@ export class TranslationRuntime {
   private readonly homeDir: string;
   private readonly fileService: IFileService;
   private readonly logger: ServerLogger;
+  private readonly resolveModelPricing: TranslationRuntimeOptions['resolveModelPricing'];
   private readonly handles = new Map<string, ProjectHandle>();
   private readonly projectLocks = new Map<string, Promise<unknown>>();
   private readonly modelManager = new BgeM3ModelManager();
   private readonly removeProgressListener: () => void;
   private readonly modelDestination: string;
   private readonly ragDataRoot: string;
+  private readonly usageOutboxRoot: string;
   private readonly ragRuntimeDescriptorPath: string;
   private bgeState: MutableBgeState = {
     status: 'missing',
@@ -196,8 +253,10 @@ export class TranslationRuntime {
     this.homeDir = resolve(options.homeDir);
     this.fileService = options.fileService;
     this.logger = options.logger;
+    this.resolveModelPricing = options.resolveModelPricing;
     this.modelDestination = join(this.homeDir, 'models', MODEL_DESTINATION_DIRECTORY);
     this.ragDataRoot = join(this.homeDir, 'translation-rag');
+    this.usageOutboxRoot = join(this.homeDir, USAGE_OUTBOX_DIRECTORY);
     // A process-unique descriptor avoids clobbering sibling KAP servers that
     // legitimately share the same product home.
     this.ragRuntimeDescriptorPath = join(
@@ -229,6 +288,7 @@ export class TranslationRuntime {
       const copied = await this.copyUploadedSource(input.sourceFileId, project);
       const { manifest, manifestSha256 } = await this.loadOrCreateManifest(project);
       this.assertManifestMatchesProject(manifest, project, copied.sha256, copied.byteLength);
+      await writeTranslationTaskBook(project, manifest);
 
       if (existingProject) {
         assertSameLedgerProject(existingProject, project, handle.artifactRoot);
@@ -311,6 +371,7 @@ export class TranslationRuntime {
   }> {
     const handle = await this.openHandle(reference);
     const loaded = await this.loadProjectFiles(handle);
+    await writeTranslationTaskBook(loaded.project, loaded.manifest);
     const reportData = handle.ledger.getDeterministicReportData(reference.projectId);
     const warnings = costWarnings(reportData);
     const source = await readFileReceipt(loaded.project.paths.sourceCopy, 'immutable source');
@@ -330,6 +391,12 @@ export class TranslationRuntime {
     const latestInstruction = handle.ledger.listInstructionEvents(reference.projectId).at(-1);
     const completionReceipt = reportData.completionSnapshots.at(-1);
     const finalOutput = await optionalFileReceipt(loaded.project.paths.finalOutputPath);
+    const finalValidation = finalOutput
+      ? await validateFinalBytes(
+          await readFile(loaded.project.paths.finalOutputPath),
+          loaded.project.source.kind,
+        )
+      : undefined;
     const reportReceipt = await optionalReportReceipt(loaded.project.paths.finalReportPath);
     return {
       project: loaded.project,
@@ -345,6 +412,7 @@ export class TranslationRuntime {
         path: resolve(loaded.project.paths.finalOutputPath),
         sha256: finalOutput.sha256,
         byteLength: finalOutput.byteLength,
+        structuralValidation: finalValidation,
       } : undefined,
       reportReceipt: reportReceipt ? {
         path: resolve(loaded.project.paths.finalReportPath),
@@ -360,7 +428,27 @@ export class TranslationRuntime {
     };
   }
 
-  async recordAgentUsage(input: TranslationAgentUsageIncrement): Promise<void> {
+  async assertPaidWorkAllowed(
+    sessionCustom: Readonly<Record<string, unknown>> | undefined,
+  ): Promise<TranslationBudgetNotification | undefined> {
+    const binding = translationUsageBinding(sessionCustom);
+    if (binding === undefined) return;
+    this.assertOpen();
+    const replayNotification = await this.replayPendingUsage(binding);
+    return await this.withProjectLock(binding.projectRoot, async () => {
+      const handle = await this.openHandle(binding);
+      const budget = handle.ledger.getBudgetStatus(binding.projectId);
+      if (!budget.hardExceeded) return replayNotification;
+      throw new TranslationRuntimeError(
+        'conflict',
+        `费用硬上限已达到：项目累计费用为 ${formatBudgetUsd(budget.actualCostMicros)}，硬上限为 ${formatBudgetUsd(budget.hardBudgetMicros!)}。不会启动新的付费工作；已开始的工作会继续运行。`,
+      );
+    });
+  }
+
+  async recordAgentUsage(
+    input: TranslationAgentUsageIncrement,
+  ): Promise<TranslationAgentUsageReceipt | undefined> {
     const binding = translationUsageBinding(input.sessionCustom);
     if (binding === undefined) return;
     this.assertOpen();
@@ -369,11 +457,16 @@ export class TranslationRuntime {
     const agentId = usageIdentity(input.agentId, 'agent id');
     const modelId = usageIdentity(input.modelId, 'model id');
     const providerId = usageIdentity(input.providerId, 'provider id');
-    if (input.sourceType !== 'turn') {
-      throw new TranslationRuntimeError('invalid', 'Only turn-scoped usage can be recorded');
-    }
-    const turnId = usageInteger(input.turnId, 'turn id');
-    const step = usageInteger(input.step, 'turn step');
+    const requestId = usageIdentity(input.requestId, 'request id');
+    const turnId = input.sourceType === 'turn'
+      ? usageInteger(input.turnId, 'turn id')
+      : input.turnId === undefined
+        ? undefined
+        : usageInteger(input.turnId, 'operation turn id');
+    const step = input.step === undefined ? 0 : usageInteger(input.step, 'turn step');
+    const ledgerTurnId = input.sourceType === 'turn'
+      ? String(turnId)
+      : `operation:${input.requestKind?.trim() || 'unspecified'}:${requestId}`;
     const inputOther = usageInteger(input.usage.inputOther, 'input token count');
     const output = usageInteger(input.usage.output, 'output token count');
     const inputCacheRead = usageInteger(input.usage.inputCacheRead, 'cache-read token count');
@@ -386,15 +479,41 @@ export class TranslationRuntime {
       throw new TranslationRuntimeError('invalid', 'Combined input token count is not a safe integer');
     }
 
+    let cost: UsageCostResult = unavailableUsageCost(
+      modelId,
+      providerId,
+      'model_price_not_configured',
+    );
+    if (this.resolveModelPricing !== undefined) {
+      try {
+        const pricing = await this.resolveModelPricing({ modelId, providerId });
+        if (pricing !== undefined) {
+          cost = calculateUsageCost({
+            inputOther,
+            output,
+            inputCacheRead,
+            inputCacheCreation,
+          }, pricing, { modelId, providerId });
+        }
+      } catch (error) {
+        this.logger.warn(
+          { modelId, providerId, err: safeErrorText(error) },
+          'model pricing lookup failed; token usage will remain unpriced',
+        );
+        cost = unavailableUsageCost(modelId, providerId, 'model_price_lookup_failed');
+      }
+    }
+
     // `onDidRecord` is a per-finish increment, never the cumulative status
     // snapshot. Including its exact four counters makes an identical replay
     // idempotent while keeping a contradictory observation visibly distinct.
     const eventId = hashCanonicalJson({
       schema_version: 1,
+      request_id: requestId,
       source_type: input.sourceType,
       session_id: sessionId,
       agent_id: agentId,
-      turn_id: turnId,
+      turn_id: turnId ?? null,
       step,
       model_id: modelId,
       provider_id: providerId,
@@ -405,34 +524,114 @@ export class TranslationRuntime {
         input_cache_creation: inputCacheCreation,
       },
     });
+    const entry: PersistedUsageOutboxEntry = {
+      schemaVersion: 1,
+      eventId,
+      projectId: binding.projectId,
+      projectRoot: binding.projectRoot,
+      sessionId,
+      agentId,
+      turnId: ledgerTurnId,
+      step,
+      modelId,
+      providerId,
+      inputTokens,
+      outputTokens: output,
+      cachedTokens: inputCacheRead,
+      priceSnapshot: cost.priceSnapshot,
+      // When pricing is unavailable the ledger still requires a numeric
+      // storage value; the snapshot explicitly marks that zero as a
+      // placeholder so reports never present it as the true cost.
+      actualCostMicros: cost.actualCostMicros,
+      stage: input.sourceType === 'operation'
+        ? 'context-maintenance'
+        : agentId === 'main'
+          ? 'coordinator'
+          : 'translation-subagent',
+    };
+    const outboxPath = this.usageOutboxPath(entry);
+    await ensureUsageOutboxEntry(outboxPath, entry);
+    const receipt = await this.commitUsageOutboxEntry(entry);
+    await this.removeCommittedUsageOutboxEntry(outboxPath);
+    return receipt;
+  }
 
-    await this.withProjectLock(binding.projectRoot, async () => {
-      const handle = await this.openHandle(binding);
-      handle.ledger.recordSyntheticUsageEvent({
-        projectId: binding.projectId,
-        eventId,
-        sessionId,
-        agentId,
-        turnId: String(turnId),
-        step,
-        modelId,
-        providerId,
-        inputTokens,
-        outputTokens: output,
-        cachedTokens: inputCacheRead,
-        priceSnapshot: {
-          availability: 'unavailable',
-          reason: 'kap_runtime_has_no_authoritative_price_catalog',
-          actual_cost_micros_is_placeholder: true,
-          provider_id: providerId,
-          model_id: modelId,
-        },
-        // Required ledger storage placeholder. The snapshot above explicitly
-        // prevents reports or budget UI from presenting this as a true zero.
-        actualCostMicros: 0,
-        stage: agentId === 'main' ? 'coordinator' : 'translation-subagent',
+  private usageOutboxPath(entry: PersistedUsageOutboxEntry): string {
+    return join(this.usageOutboxRoot, entry.projectId, `${entry.eventId}.json`);
+  }
+
+  private async commitUsageOutboxEntry(
+    entry: PersistedUsageOutboxEntry,
+  ): Promise<TranslationAgentUsageReceipt> {
+    return await this.withProjectLock(entry.projectRoot, async () => {
+      const handle = await this.openHandle({
+        projectId: entry.projectId,
+        projectRoot: entry.projectRoot,
       });
+      const before = handle.ledger.getBudgetStatus(entry.projectId);
+      const recorded = handle.ledger.recordSyntheticUsageEvent({
+        projectId: entry.projectId,
+        eventId: entry.eventId,
+        sessionId: entry.sessionId,
+        agentId: entry.agentId,
+        turnId: entry.turnId,
+        step: entry.step,
+        modelId: entry.modelId,
+        providerId: entry.providerId,
+        inputTokens: entry.inputTokens,
+        outputTokens: entry.outputTokens,
+        cachedTokens: entry.cachedTokens,
+        priceSnapshot: entry.priceSnapshot,
+        actualCostMicros: entry.actualCostMicros,
+        stage: entry.stage,
+      });
+      return {
+        budget: recorded.budget,
+        notification: budgetNotification(before, recorded.budget, recorded.reused),
+      };
     });
+  }
+
+  private async replayPendingUsage(
+    binding: ProjectReference,
+  ): Promise<TranslationBudgetNotification | undefined> {
+    const directory = join(this.usageOutboxRoot, binding.projectId);
+    let names: string[];
+    try {
+      names = await readdir(directory);
+    } catch (error) {
+      if (isMissingFile(error)) return undefined;
+      throw error;
+    }
+    let notification: TranslationBudgetNotification | undefined;
+    for (const name of names.filter((item) => item.endsWith('.json')).sort()) {
+      const path = join(directory, name);
+      const entry = validateUsageOutboxEntry(JSON.parse(await readFile(path, 'utf8')) as unknown);
+      if (entry.projectId !== binding.projectId || !samePath(entry.projectRoot, binding.projectRoot)) {
+        throw new TranslationRuntimeError(
+          'conflict',
+          'Pending usage belongs to a different translation project root',
+        );
+      }
+      if (name !== `${entry.eventId}.json`) {
+        throw new TranslationRuntimeError('conflict', 'Pending usage filename is invalid');
+      }
+      const receipt = await this.commitUsageOutboxEntry(entry);
+      notification ??= receipt.notification;
+      await this.removeCommittedUsageOutboxEntry(path);
+    }
+    return notification;
+  }
+
+  private async removeCommittedUsageOutboxEntry(path: string): Promise<void> {
+    try {
+      await rm(path, { force: true });
+    } catch (error) {
+      this.logger.warn(
+        { path, err: safeErrorText(error) },
+        'committed translation usage outbox entry could not be removed; replay is idempotent',
+      );
+    }
   }
 
   async applyInstruction(input: ApplyProjectInstructionInput): Promise<AppliedProjectInstruction> {
@@ -1296,6 +1495,24 @@ function validateRuntimeProject(value: unknown): RuntimeTranslationProject {
   const projectId = requiredString(value, 'projectId');
   if (!SAFE_PROJECT_ID.test(projectId)) throw new TranslationRuntimeError('invalid', 'project.projectId is invalid');
   const name = requiredString(value, 'name');
+  const rawLanguages = value['languages'];
+  const languages = rawLanguages === undefined
+    ? { source: 'auto' as const, target: 'zh-CN' as const }
+    : rawLanguages;
+  if (!isRecord(languages)) {
+    throw new TranslationRuntimeError('invalid', 'project.languages must be an object');
+  }
+  const sourceLanguage = languages['source'];
+  const targetLanguage = languages['target'];
+  if (typeof sourceLanguage !== 'string' || !sourceLanguage.trim() || sourceLanguage.length > 80) {
+    throw new TranslationRuntimeError('invalid', 'project.languages.source is invalid');
+  }
+  if (!['zh-CN', 'en'].includes(String(targetLanguage))) {
+    throw new TranslationRuntimeError('invalid', 'project.languages.target is invalid');
+  }
+  if (sourceLanguage !== 'auto' && sourceLanguage === targetLanguage) {
+    throw new TranslationRuntimeError('invalid', 'project source and target languages must differ');
+  }
   const model = requiredString(value, 'model');
   splitPinnedModel(model);
   const source = value['source'];
@@ -1400,7 +1617,56 @@ function validateRuntimeProject(value: unknown): RuntimeTranslationProject {
   for (const name of ['stages', 'chapters', 'issues', 'artifacts', 'checkpoints', 'overrides']) {
     if (!Array.isArray(value[name])) throw new TranslationRuntimeError('invalid', `project.${name} must be an array`);
   }
-  return value as unknown as RuntimeTranslationProject;
+  return {
+    ...value,
+    languages: {
+      source: sourceLanguage.trim(),
+      target: targetLanguage as RuntimeTranslationProject['languages']['target'],
+    },
+  } as unknown as RuntimeTranslationProject;
+}
+
+function taskBookText(project: RuntimeTranslationProject, manifest: BookManifest): string {
+  return buildTranslationTaskBook(project, manifest);
+}
+
+async function writeTranslationTaskBook(
+  project: RuntimeTranslationProject,
+  manifest: BookManifest,
+): Promise<void> {
+  const path = join(project.paths.projectRoot, 'translation-task.txt');
+  assertPathWithin(project.paths.projectRoot, path, 'translation task book');
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    const handle = await open(path, 'wx', 0o600);
+    try {
+      await handle.writeFile(taskBookText(project, manifest), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (!isRecord(error) || error['code'] !== 'EEXIST') throw error;
+    const existing = await readFile(path, 'utf8');
+    if (
+      existing !== buildLegacyTranslationTaskBook(project, manifest)
+      && existing !== buildTranslationTaskBookV3(project, manifest)
+    ) {
+      // The task book is user-readable and may contain deliberate notes. Reuse
+      // any unknown or edited file instead of overwriting user changes.
+      return;
+    }
+    // Upgrade only the byte-for-byte output of the previous generator. This
+    // lets existing projects receive the richer contract without touching a
+    // task book that the user or an agent edited deliberately.
+    const handle = await open(path, 'w', 0o600);
+    try {
+      await handle.writeFile(taskBookText(project, manifest), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
 }
 
 function splitPinnedModel(value: string): { providerId: string; modelId: string } {
@@ -1786,6 +2052,21 @@ async function writeAtomicPrivateJson(path: string, value: unknown): Promise<voi
   }
 }
 
+async function ensureUsageOutboxEntry(
+  path: string,
+  entry: PersistedUsageOutboxEntry,
+): Promise<void> {
+  try {
+    await writeAtomicPrivateJson(path, entry);
+  } catch (error) {
+    if (!isAlreadyExists(error)) throw error;
+    const existing = validateUsageOutboxEntry(JSON.parse(await readFile(path, 'utf8')) as unknown);
+    if (hashCanonicalJson(existing) !== hashCanonicalJson(entry)) {
+      throw new TranslationRuntimeError('conflict', 'Pending usage identity has contradictory contents');
+    }
+  }
+}
+
 async function readFileReceipt(path: string, label: string): Promise<{
   bytes: Buffer;
   sha256: string;
@@ -1886,6 +2167,155 @@ function usageInteger(value: unknown, label: string): number {
   return value as number;
 }
 
+function validateUsageOutboxEntry(value: unknown): PersistedUsageOutboxEntry {
+  if (!isRecord(value) || value['schemaVersion'] !== 1) {
+    throw new TranslationRuntimeError('conflict', 'Pending usage schema is invalid');
+  }
+  const eventId = requiredString(value, 'eventId');
+  const projectId = requiredString(value, 'projectId');
+  if (!SHA256.test(eventId) || !SAFE_PROJECT_ID.test(projectId)) {
+    throw new TranslationRuntimeError('conflict', 'Pending usage identity is invalid');
+  }
+  const projectRoot = normalizeProjectRoot(requiredString(value, 'projectRoot'));
+  const sessionId = usageIdentity(value['sessionId'], 'pending session id');
+  const agentId = usageIdentity(value['agentId'], 'pending agent id');
+  const turnId = usageIdentity(value['turnId'], 'pending turn id');
+  const modelId = usageIdentity(value['modelId'], 'pending model id');
+  const providerId = usageIdentity(value['providerId'], 'pending provider id');
+  const step = usageInteger(value['step'], 'pending step');
+  const inputTokens = usageInteger(value['inputTokens'], 'pending input token count');
+  const outputTokens = usageInteger(value['outputTokens'], 'pending output token count');
+  const cachedTokens = usageInteger(value['cachedTokens'], 'pending cached token count');
+  const actualCostMicros = usageInteger(value['actualCostMicros'], 'pending cost');
+  const priceSnapshot = value['priceSnapshot'];
+  if (!isRecord(priceSnapshot)) {
+    throw new TranslationRuntimeError('conflict', 'Pending usage price snapshot is invalid');
+  }
+  const stage = value['stage'];
+  if (
+    stage !== 'coordinator'
+    && stage !== 'translation-subagent'
+    && stage !== 'context-maintenance'
+  ) {
+    throw new TranslationRuntimeError('conflict', 'Pending usage stage is invalid');
+  }
+  return {
+    schemaVersion: 1,
+    eventId,
+    projectId,
+    projectRoot,
+    sessionId,
+    agentId,
+    turnId,
+    step,
+    modelId,
+    providerId,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    priceSnapshot,
+    actualCostMicros,
+    stage,
+  };
+}
+
+interface UsageCostResult {
+  readonly actualCostMicros: number;
+  readonly priceSnapshot: Record<string, unknown>;
+}
+
+export function calculateUsageCost(
+  usage: TranslationAgentUsageIncrement['usage'],
+  pricing: ModelTokenPricing,
+  identity: ModelPricingLookup,
+): UsageCostResult {
+  const prices = [
+    pricing.inputUsdPerMillion,
+    pricing.outputUsdPerMillion,
+    pricing.cacheReadUsdPerMillion,
+    pricing.cacheCreationUsdPerMillion,
+  ].filter((price): price is number => price !== undefined);
+  if (prices.some((price) => !Number.isFinite(price) || price < 0)) {
+    throw new TranslationRuntimeError('invalid', 'Model token prices must be finite and non-negative');
+  }
+  const cacheReadPrice = pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion;
+  const cacheCreationPrice = pricing.cacheCreationUsdPerMillion ?? pricing.inputUsdPerMillion;
+  // tokens × (USD / 1M tokens) × (1M micro-USD / USD) = micro-USD.
+  const rawMicros =
+    usage.inputOther * pricing.inputUsdPerMillion
+    + usage.output * pricing.outputUsdPerMillion
+    + usage.inputCacheRead * cacheReadPrice
+    + usage.inputCacheCreation * cacheCreationPrice;
+  const actualCostMicros = Math.round(rawMicros);
+  if (!Number.isSafeInteger(actualCostMicros) || actualCostMicros < 0) {
+    throw new TranslationRuntimeError('invalid', 'Calculated model cost is outside the safe integer range');
+  }
+  return {
+    actualCostMicros,
+    priceSnapshot: {
+      availability: 'configured',
+      currency: pricing.currency,
+      unit: 'usd_per_million_tokens',
+      source: 'user_model_configuration',
+      provider_id: identity.providerId,
+      model_id: identity.modelId,
+      input_usd_per_million: pricing.inputUsdPerMillion,
+      output_usd_per_million: pricing.outputUsdPerMillion,
+      cache_read_usd_per_million: cacheReadPrice,
+      cache_creation_usd_per_million: cacheCreationPrice,
+      cache_read_fallback_to_input: pricing.cacheReadUsdPerMillion === undefined,
+      cache_creation_fallback_to_input: pricing.cacheCreationUsdPerMillion === undefined,
+    },
+  };
+}
+
+function unavailableUsageCost(
+  modelId: string,
+  providerId: string,
+  reason: string,
+): UsageCostResult {
+  return {
+    actualCostMicros: 0,
+    priceSnapshot: {
+      availability: 'unavailable',
+      reason,
+      actual_cost_micros_is_placeholder: true,
+      provider_id: providerId,
+      model_id: modelId,
+    },
+  };
+}
+
+function formatBudgetUsd(micros: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  }).format(micros / 1_000_000);
+}
+
+function budgetNotification(
+  before: BudgetStatus,
+  budget: BudgetStatus,
+  reused: boolean,
+): TranslationBudgetNotification | undefined {
+  if (reused) return undefined;
+  if (!before.hardExceeded && budget.hardExceeded) {
+    return {
+      code: 'translation-hard-budget-reached',
+      message: `费用硬上限已达到：项目累计费用为 ${formatBudgetUsd(budget.actualCostMicros)}，硬上限为 ${formatBudgetUsd(budget.hardBudgetMicros!)}。不会启动新的付费工作；已开始的工作会继续运行。`,
+    };
+  }
+  if (!before.softExceeded && budget.softExceeded) {
+    return {
+      code: 'translation-soft-budget-reached',
+      message: `费用提醒：项目累计费用已达到 ${formatBudgetUsd(budget.actualCostMicros)}，提醒线为 ${formatBudgetUsd(budget.softBudgetMicros!)}。已开始的工作会继续运行。`,
+    };
+  }
+  return undefined;
+}
+
 function normalizeProjectRoot(value: string): string {
   if (typeof value !== 'string' || !value.trim() || !isAbsolute(value)) {
     throw new TranslationRuntimeError('invalid', 'project_root must be an absolute path');
@@ -1919,6 +2349,12 @@ function isMissingFile(error: unknown): boolean {
   return error instanceof Error
     && 'code' in error
     && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return error instanceof Error
+    && 'code' in error
+    && (error as NodeJS.ErrnoException).code === 'EEXIST';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1219,7 +1219,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(got.body.data.metadata.cwd).toBe(cwd);
   });
 
-  it('replaces custom metadata on a second profile update (v1 semantics)', async () => {
+  it('merges custom metadata on a second profile update', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
     const id = created.body.data.id;
@@ -1229,9 +1229,9 @@ describe('server-v2 /api/v1/sessions', () => {
       metadata: { baz: 1 },
     });
     expect(second.body.code).toBe(0);
-    // v1 writes the patch straight into `custom` (replace, not deep-merge): the
-    // first key is gone, the new key is present, and cwd still wins.
-    expect(second.body.data.metadata['foo']).toBeUndefined();
+    // The profile endpoint is a patch surface: unrelated project metadata
+    // survives later status/config writes, the new key lands, and cwd wins.
+    expect(second.body.data.metadata['foo']).toBe('bar');
     expect(second.body.data.metadata['baz']).toBe(1);
     expect(second.body.data.metadata.cwd).toBe(cwd);
   });

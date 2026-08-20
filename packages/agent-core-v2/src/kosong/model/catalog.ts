@@ -101,6 +101,13 @@ export const modelCatalogItemSchema = z.object({
   capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
+  pricing: z.object({
+    currency: z.literal('USD'),
+    input_usd_per_million: z.number().nonnegative(),
+    output_usd_per_million: z.number().nonnegative(),
+    cache_read_usd_per_million: z.number().nonnegative().optional(),
+    cache_creation_usd_per_million: z.number().nonnegative().optional(),
+  }).optional(),
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
@@ -138,14 +145,16 @@ export function toProtocolModel(
   record: ModelRecord,
   providerType?: string,
 ): ModelCatalogItem {
+  const effective = effectiveModelConfig(record, providerType ?? model.providerType);
   return {
     provider: model.providerName,
     model: model.id,
     display_name: model.displayName ?? model.name ?? model.id,
     max_context_size: model.maxContextSize,
-    capabilities: effectiveModelConfig(record, providerType ?? model.providerType).capabilities,
+    capabilities: effective.capabilities,
     support_efforts: model.supportEfforts === undefined ? undefined : [...model.supportEfforts],
     default_effort: model.defaultEffort,
+    pricing: protocolPricing(effective),
   };
 }
 
@@ -163,6 +172,25 @@ export function toProtocolModelFallback(
     capabilities: effective.capabilities,
     support_efforts: effective.supportEfforts,
     default_effort: effective.defaultEffort,
+    pricing: protocolPricing(effective),
+  };
+}
+
+function protocolPricing(record: ModelRecord): ModelCatalogItem['pricing'] {
+  if (
+    record.inputPriceUsdPerMillion === undefined
+    || record.outputPriceUsdPerMillion === undefined
+  ) return undefined;
+  return {
+    currency: 'USD',
+    input_usd_per_million: record.inputPriceUsdPerMillion,
+    output_usd_per_million: record.outputPriceUsdPerMillion,
+    ...(record.cacheReadPriceUsdPerMillion === undefined ? {} : {
+      cache_read_usd_per_million: record.cacheReadPriceUsdPerMillion,
+    }),
+    ...(record.cacheCreationPriceUsdPerMillion === undefined ? {} : {
+      cache_creation_usd_per_million: record.cacheCreationPriceUsdPerMillion,
+    }),
   };
 }
 

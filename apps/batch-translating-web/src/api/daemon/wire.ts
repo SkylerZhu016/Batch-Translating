@@ -374,6 +374,13 @@ export interface WireModel {
   capabilities?: string[];
   support_efforts?: string[];
   default_effort?: string;
+  pricing?: {
+    currency: 'USD';
+    input_usd_per_million: number;
+    output_usd_per_million: number;
+    cache_read_usd_per_million?: number;
+    cache_creation_usd_per_million?: number;
+  };
 }
 
 export interface WireProvider {

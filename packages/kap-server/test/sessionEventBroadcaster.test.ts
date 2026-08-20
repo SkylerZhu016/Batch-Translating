@@ -19,6 +19,7 @@ import {
   IAgentActivityView,
   LifecycleScope,
   IAgentLifecycleService,
+  IAgentLLMRequesterService,
   IAgentProfileService,
   IAgentTokenCountingService,
   IAgentUsageService,
@@ -119,11 +120,22 @@ class FakeAgentHandle {
   private readonly services = new Map<unknown, unknown>();
   constructor(readonly id: string) {
     this.services.set(IEventBus, this.bus);
+    this.services.set(IAgentUsageService, {
+      status: () => ({}),
+      onDidRecord: () => ({ dispose: () => {} }),
+    });
     this.accessor = {
       get: (token: unknown) => this.services.get(token),
     };
   }
   set(token: unknown, service: unknown): void {
+    if (token === IAgentUsageService && typeof service === 'object' && service !== null) {
+      this.services.set(token, {
+        onDidRecord: () => ({ dispose: () => {} }),
+        ...(service as Record<string, unknown>),
+      });
+      return;
+    }
     this.services.set(token, service);
   }
   dispose(): void {}
@@ -350,6 +362,7 @@ function makeCore(
   sessions: Map<string, FakeLifecycle>,
   eventBus = new FakeEventBus(),
   metaAgents: Record<string, { type?: string; parentAgentId?: string }> = {},
+  sessionCustom: Record<string, unknown> = {},
 ): Scope {
   const sessionFor = (sid: string) => {
     const lifecycle = sessions.get(sid);
@@ -360,7 +373,9 @@ function makeCore(
         if (t === ISessionInteractionService) return lifecycle.interactions;
         if (t === ISessionActivityView) return lifecycle.workView;
         // Minimal metadata read for the transcript binding's descriptor pass.
-        if (t === ISessionMetadata) return { read: async () => ({ agents: metaAgents }) };
+        if (t === ISessionMetadata) {
+          return { read: async () => ({ agents: metaAgents, custom: sessionCustom }) };
+        }
         return undefined;
       },
     };
@@ -515,6 +530,152 @@ describe('SessionEventBroadcaster', () => {
     expect(vol.every((e) => e.seq === 2)).toBe(true); // rides the durable watermark
     expect(vol.map((e) => e.offset)).toEqual([0, 2]);
     expect((await bc.getCursor('s1')).seq).toBe(2); // seq did not advance
+  });
+
+  it('publishes budget warnings and drains usage accounting before a new request', async () => {
+    await bc.close();
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    sessions.set('s1', lc);
+    const sessionCustom = { batchTranslation: { projectId: 'p1' } };
+    let usageHandler: ((context: {
+      requestId: string;
+      source: { type: 'turn'; turnId: number; step: number };
+      model: string;
+      modelId?: string;
+      providerId?: string;
+      usage: { inputOther: number; output: number; inputCacheRead: number; inputCacheCreation: number };
+    }) => void) | undefined;
+    let requestGuard: (() => Promise<void>) | undefined;
+    main.set(IAgentUsageService, {
+      status: () => ({}),
+      onDidRecord: (handler: NonNullable<typeof usageHandler>) => {
+        usageHandler = handler;
+        return { dispose: () => {} };
+      },
+    });
+    main.set(IModelCatalog, {
+      get: () => ({ id: 'model-id', providerName: 'provider-id' }),
+    });
+    main.set(IAgentLLMRequesterService, {
+      registerRequestGuard: (guard: () => Promise<void>) => {
+        requestGuard = guard;
+        return { dispose: () => {} };
+      },
+    });
+    let releaseUsage!: () => void;
+    const usageWritten = new Promise<void>((resolve) => {
+      releaseUsage = resolve;
+    });
+    const onAgentRequestStart = vi.fn(async () => undefined);
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, sessionCustom),
+      onAgentUsage: async () => {
+        await usageWritten;
+        return {
+          notification: {
+            code: 'translation-soft-budget-reached',
+            message: '费用提醒',
+          },
+        };
+      },
+      onAgentRequestStart,
+    });
+    const { target, envelopes } = collectingTarget();
+    await bc.subscribe('s1', target);
+
+    usageHandler?.({
+      requestId: 'request-1',
+      source: { type: 'turn', turnId: 1, step: 1 },
+      model: 'model-alias',
+      usage: { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 4 },
+    });
+    const guarded = requestGuard?.();
+    await Promise.resolve();
+    expect(onAgentRequestStart).not.toHaveBeenCalled();
+
+    releaseUsage();
+    await guarded;
+    expect(onAgentRequestStart).toHaveBeenCalledWith({
+      sessionId: 's1',
+      agentId: 'main',
+      sessionCustom,
+    });
+    await bc.getCursor('s1');
+    expect(envelopes).toContainEqual(expect.objectContaining({
+      type: 'warning',
+      payload: expect.objectContaining({
+        code: 'translation-soft-budget-reached',
+        message: '费用提醒',
+      }),
+    }));
+  });
+
+  it('retries a failed usage increment before allowing the next paid request', async () => {
+    await bc.close();
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    sessions.set('s1', lc);
+    let usageHandler: ((context: {
+      requestId: string;
+      source: { type: 'turn'; turnId: number; step: number };
+      model: string;
+      modelId?: string;
+      providerId?: string;
+      usage: { inputOther: number; output: number; inputCacheRead: number; inputCacheCreation: number };
+    }) => void) | undefined;
+    let requestGuard: (() => Promise<void>) | undefined;
+    main.set(IAgentUsageService, {
+      status: () => ({}),
+      onDidRecord: (handler: NonNullable<typeof usageHandler>) => {
+        usageHandler = handler;
+        return { dispose: () => {} };
+      },
+    });
+    main.set(IModelCatalog, {
+      get: () => {
+        throw new Error('catalog alias was removed after request completion');
+      },
+    });
+    main.set(IAgentLLMRequesterService, {
+      registerRequestGuard: (guard: () => Promise<void>) => {
+        requestGuard = guard;
+        return { dispose: () => {} };
+      },
+    });
+    const onAgentUsage = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary ledger lock'))
+      .mockResolvedValueOnce(undefined);
+    const onAgentRequestStart = vi.fn(async () => undefined);
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, {
+        batchTranslation: { projectId: 'p1' },
+      }),
+      onAgentUsage,
+      onAgentRequestStart,
+    });
+    await bc.subscribe('s1', collectingTarget().target);
+
+    usageHandler?.({
+      requestId: 'request-retry',
+      source: { type: 'turn', turnId: 1, step: 1 },
+      model: 'model-alias',
+      modelId: 'model-id',
+      providerId: 'provider-id',
+      usage: { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 4 },
+    });
+    await vi.waitFor(() => expect(onAgentUsage).toHaveBeenCalledTimes(1));
+
+    await expect(requestGuard?.()).resolves.toBeUndefined();
+    expect(onAgentUsage).toHaveBeenCalledTimes(2);
+    expect(onAgentUsage.mock.calls[0]?.[0]).toEqual(onAgentUsage.mock.calls[1]?.[0]);
+    expect(onAgentRequestStart).toHaveBeenCalledTimes(1);
+
+    await expect(requestGuard?.()).resolves.toBeUndefined();
+    expect(onAgentUsage).toHaveBeenCalledTimes(2);
+    expect(onAgentRequestStart).toHaveBeenCalledTimes(2);
   });
 
   it('projects main-agent status and context changes into complete v1 status events', async () => {

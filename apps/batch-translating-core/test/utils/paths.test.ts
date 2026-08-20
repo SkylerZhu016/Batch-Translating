@@ -45,6 +45,12 @@ describe('getDataDir', () => {
     expect(getDataDir()).toBe('/batch-home');
   });
 
+  it('trims surrounding whitespace from the selected home directory', () => {
+    process.env['BATCH_TRANSLATING_HOME'] = '  /batch-home  ';
+    process.env['KIMI_CODE_HOME'] = '/kimi-home';
+    expect(getDataDir()).toBe('/batch-home');
+  });
+
   it('falls back to KIMI_CODE_HOME when BATCH_TRANSLATING_HOME is empty', () => {
     process.env['BATCH_TRANSLATING_HOME'] = '';
     process.env['KIMI_CODE_HOME'] = '/kimi-home';

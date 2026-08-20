@@ -65,6 +65,7 @@ import type {
 } from '@moonshot-ai/agent-core-v2';
 import {
   IAgentLifecycleService,
+  IAgentLLMRequesterService,
   IAgentUsageService,
   IEventBus,
   IEventService,
@@ -151,9 +152,11 @@ export interface AgentUsageIncrement {
   readonly sessionId: string;
   readonly agentId: string;
   readonly sessionCustom?: Readonly<Record<string, unknown>>;
-  readonly sourceType: 'turn';
-  readonly turnId: number;
-  readonly step: number;
+  readonly requestId: string;
+  readonly sourceType: 'turn' | 'operation';
+  readonly requestKind?: string;
+  readonly turnId?: number;
+  readonly step?: number;
   readonly modelId: string;
   readonly providerId: string;
   readonly usage: {
@@ -162,6 +165,19 @@ export interface AgentUsageIncrement {
     readonly inputCacheRead: number;
     readonly inputCacheCreation: number;
   };
+}
+
+export interface AgentUsageSinkResult {
+  readonly notification?: {
+    readonly code: string;
+    readonly message: string;
+  };
+}
+
+export interface AgentRequestStartInput {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly sessionCustom?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -257,7 +273,9 @@ export class SessionEventBroadcaster {
   private readonly pendingStates = new Map<string, Promise<SessionState | undefined>>();
   private readonly maxBufferSize: number;
   private readonly coreEventSubscription: IDisposable;
-  private readonly pendingUsage = new Set<Promise<void>>();
+  private readonly pendingUsage = new Map<string, Set<Promise<void>>>();
+  private readonly pendingUsageFailures = new Map<string, unknown>();
+  private readonly pendingUsageRetries = new Map<string, Map<string, () => Promise<void>>>();
   private closed = false;
 
   constructor(
@@ -273,7 +291,12 @@ export class SessionEventBroadcaster {
        */
       readonly transcriptService?: TranscriptService;
       /** Optional production sink for exact per-request agent usage increments. */
-      readonly onAgentUsage?: (usage: AgentUsageIncrement) => void | Promise<void>;
+      readonly onAgentUsage?: (
+        usage: AgentUsageIncrement,
+      ) => AgentUsageSinkResult | void | Promise<AgentUsageSinkResult | void>;
+      readonly onAgentRequestStart?: (
+        input: AgentRequestStartInput,
+      ) => AgentUsageSinkResult | void | Promise<AgentUsageSinkResult | void>;
     },
   ) {
     this.maxBufferSize = opts.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
@@ -755,6 +778,10 @@ export class SessionEventBroadcaster {
     if (this.closed) return;
     this.closed = true;
     this.coreEventSubscription.dispose();
+    await Promise.allSettled([...this.pendingUsage.values()].flatMap((pending) => [...pending]));
+    for (const sessionId of this.pendingUsageRetries.keys()) {
+      await this.retryPendingUsage(sessionId).catch(() => undefined);
+    }
     for (const [sessionId, state] of this.sessions) {
       await disposeSessionState(state);
       // Transcript bindings die with the session stream (its store
@@ -762,7 +789,9 @@ export class SessionEventBroadcaster {
       this.opts.transcriptService?.dropSession(sessionId);
     }
     this.sessions.clear();
-    await Promise.allSettled([...this.pendingUsage]);
+    this.pendingUsage.clear();
+    this.pendingUsageFailures.clear();
+    this.pendingUsageRetries.clear();
   }
 
   private ensureState(sessionId: string): Promise<SessionState | undefined> {
@@ -1054,6 +1083,26 @@ export class SessionEventBroadcaster {
       });
     };
     const disposables: IDisposable[] = [
+      ...(this.opts.onAgentRequestStart === undefined
+        ? []
+        : [handle.accessor.get(IAgentLLMRequesterService).registerRequestGuard(async () => {
+            await this.waitForPendingUsage(sessionId);
+            await this.retryPendingUsage(sessionId);
+            const metadata = await sessionMetadata.read();
+            const result = await this.opts.onAgentRequestStart?.({
+              sessionId,
+              agentId: handle.id,
+              sessionCustom: metadata.custom,
+            });
+            this.pendingUsageFailures.delete(sessionId);
+            if (result !== undefined && result.notification !== undefined) {
+              this.onAgentEvent(sessionId, handle.id, {
+                type: 'warning',
+                code: result.notification.code,
+                message: result.notification.message,
+              });
+            }
+          })]),
       eventBus.subscribe((event) => {
         let projected = event;
         if (event.type === 'agent.status.updated') {
@@ -1075,40 +1124,28 @@ export class SessionEventBroadcaster {
         this.onAgentEvent(sessionId, handle.id, projected);
       }),
       usageService.onDidRecord((context) => {
-        const source = context.source;
-        if (this.opts.onAgentUsage === undefined || source?.type !== 'turn' || source.step === undefined) {
-          // Operation requests have no stable per-request ordinal. Missing one
-          // is safer than attributing it twice or to the wrong translation.
-          return;
-        }
-
-        let modelId: string;
-        let providerId: string;
-        try {
-          const model = modelCatalog.get(context.model);
-          modelId = model.id.trim();
-          providerId = model.providerName.trim();
+        if (this.opts.onAgentUsage === undefined) return;
+        const attempt = async (): Promise<void> => {
+          let modelId = context.modelId?.trim();
+          let providerId = context.providerId?.trim();
+          if (!modelId || !providerId) {
+            const model = modelCatalog.get(context.model);
+            modelId = model.id.trim();
+            providerId = model.providerName.trim();
+          }
           if (!modelId || !providerId) throw new Error('resolved model identity is empty');
-        } catch (error) {
-          this.opts.logger?.warn(
-            { sessionId, agentId: handle.id, err: safeUsageError(error) },
-            'agent usage was not recorded because its runtime model identity was unavailable',
-          );
-          return;
-        }
-
-        // AgentUsageService fires this increment once after a successful model
-        // request finishes. A turn step is therefore the stable request ordinal;
-        // the ledger event id additionally includes this exact token tuple.
-        let pending!: Promise<void>;
-        pending = sessionMetadata.read()
-          .then((metadata) => this.opts.onAgentUsage?.({
+          const metadata = await sessionMetadata.read();
+          const result = await this.opts.onAgentUsage?.({
             sessionId,
             agentId: handle.id,
             sessionCustom: metadata.custom,
-            sourceType: 'turn',
-            turnId: source.turnId,
-            step: source.step!,
+            requestId: context.requestId,
+            sourceType: context.source?.type === 'turn' ? 'turn' : 'operation',
+            requestKind: context.source?.type === 'operation'
+              ? context.source.requestKind
+              : undefined,
+            turnId: context.source?.turnId,
+            step: context.source?.type === 'turn' ? context.source.step : undefined,
             modelId,
             providerId,
             usage: {
@@ -1117,22 +1154,87 @@ export class SessionEventBroadcaster {
               inputCacheRead: context.usage.inputCacheRead,
               inputCacheCreation: context.usage.inputCacheCreation,
             },
-          }))
-          .then(() => undefined)
+          });
+          if (result !== undefined && result.notification !== undefined) {
+            this.onAgentEvent(sessionId, handle.id, {
+              type: 'warning',
+              code: result.notification.code,
+              message: result.notification.message,
+            });
+          }
+        };
+        let retries = this.pendingUsageRetries.get(sessionId);
+        if (retries === undefined) {
+          retries = new Map();
+          this.pendingUsageRetries.set(sessionId, retries);
+        }
+        retries.set(context.requestId, attempt);
+
+        // AgentUsageService fires this increment once after a successful model
+        // request finishes and assigns it a durable request identity before dispatch.
+        let pending!: Promise<void>;
+        pending = attempt()
+          .then(() => {
+            const sessionRetries = this.pendingUsageRetries.get(sessionId);
+            sessionRetries?.delete(context.requestId);
+            if (sessionRetries?.size === 0) {
+              this.pendingUsageRetries.delete(sessionId);
+              this.pendingUsageFailures.delete(sessionId);
+            }
+          })
           .catch((error: unknown) => {
+            this.pendingUsageFailures.set(sessionId, error);
             this.opts.logger?.warn(
               { sessionId, agentId: handle.id, err: safeUsageError(error) },
               'agent usage could not be written to the bound translation ledger',
             );
           })
           .finally(() => {
-            this.pendingUsage.delete(pending);
+            const sessionPending = this.pendingUsage.get(sessionId);
+            sessionPending?.delete(pending);
+            if (sessionPending?.size === 0) this.pendingUsage.delete(sessionId);
           });
-        this.pendingUsage.add(pending);
+        let sessionPending = this.pendingUsage.get(sessionId);
+        if (sessionPending === undefined) {
+          sessionPending = new Set();
+          this.pendingUsage.set(sessionId, sessionPending);
+        }
+        sessionPending.add(pending);
       }),
     ];
 
     return { dispose: () => disposables.forEach((disposable) => disposable.dispose()) };
+  }
+
+  private async waitForPendingUsage(sessionId: string): Promise<void> {
+    for (;;) {
+      const pending = this.pendingUsage.get(sessionId);
+      if (pending === undefined || pending.size === 0) return;
+      await Promise.allSettled([...pending]);
+    }
+  }
+
+  private async retryPendingUsage(sessionId: string): Promise<void> {
+    const retries = this.pendingUsageRetries.get(sessionId);
+    if (retries === undefined || retries.size === 0) return;
+    for (const [requestId, attempt] of [...retries]) {
+      try {
+        await attempt();
+        retries.delete(requestId);
+      } catch (error) {
+        this.pendingUsageFailures.set(sessionId, error);
+        this.opts.logger?.warn(
+          { sessionId, requestId, err: safeUsageError(error) },
+          'agent usage retry failed before a new paid request',
+        );
+        throw new Error(
+          '费用统计补记失败；为防止绕过费用硬上限，暂不启动新的付费工作。',
+          { cause: error },
+        );
+      }
+    }
+    this.pendingUsageRetries.delete(sessionId);
+    this.pendingUsageFailures.delete(sessionId);
   }
 
   private onAgentEvent(sessionId: string, agentId: string, event: DomainEvent): void {

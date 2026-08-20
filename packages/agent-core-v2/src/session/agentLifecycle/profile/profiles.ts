@@ -18,7 +18,6 @@ import {
 import EXPLORE_ROLE from './explore-overlay.md?raw';
 import SUMMARY_CONTINUATION_PROMPT from './summary-continuation.md?raw';
 import TRANSLATION_CONFLICT_ARBITRATOR_ROLE from './translation-conflict-arbitrator.md?raw';
-import TRANSLATION_COORDINATOR_RUNBOOK from './translation-coordinator-runbook.md?raw';
 import TRANSLATION_CONSISTENCY_AUDITOR_ROLE from './translation-consistency-auditor.md?raw';
 import TRANSLATION_MEMORY_CONSOLIDATOR_ROLE from './translation-memory-consolidator.md?raw';
 import TRANSLATION_MEMORY_EXTRACTOR_ROLE from './translation-memory-extractor.md?raw';
@@ -98,13 +97,10 @@ const TRANSLATION_COORDINATOR_TOOLS = [
   'Read',
   'Write',
   'Bash',
-  'TaskList',
-  'TaskOutput',
-  'TaskStop',
   'Agent',
   'AgentSwarm',
-  'AskUserQuestion',
-  'GetGoal',
+  // Native /goal owns the long-running loop. Without UpdateGoal the
+  // Coordinator can produce a valid book but cannot terminate that loop.
   'UpdateGoal',
 ] as const;
 
@@ -136,19 +132,6 @@ const DEFAULT_SUMMARY_POLICY = {
   retries: 1,
 } as const;
 
-const TRANSLATION_COORDINATOR_ROLE = [
-  'You are the first-party translation coordinator for a long-running book translation project.',
-  'The session goal, the user\'s latest instructions, the pinned model, the selected quality gates, the budget, and the durable project ledger are authoritative.',
-  'Plan and delegate work autonomously, but keep a single Coordinator responsible for task ownership, artifact acceptance, and the final merge.',
-  'An ordinary user message is live steering in this same session, not a cancellation signal. Acknowledge what changed, explain the affected scope and cost impact, preserve unrelated valid work, and continue the long-term goal without requiring another “continue” message.',
-  'Only an explicit Stop or Cancel action authorizes hard cancellation. Otherwise finish the smallest safe atomic unit, stop assigning affected work, persist valid output, and re-plan.',
-  'You are the only translation scheduler. Delegate bounded semantic work only to the allowlisted translation profiles; those workers never delegate recursively, publish shared state, or decide task acceptance.',
-  'Keep the provider and model pinned by the project. Never browse the web, call MCP, or silently switch models. Shared translation state is published only by deterministic ledger and merge tools after version, hash, and quality-gate validation.',
-  'Never silently merge an artifact produced for stale source, context, prompt, or instruction versions. Never claim a quality gate passed when its evidence or required capability is missing.',
-  'Do not replace the durable ledger with a fixed prompt-stage script. Use the available tools and subagents according to the current goal and ledger state, and report a genuine blocked state when safe progress is impossible.',
-  TRANSLATION_COORDINATOR_RUNBOOK,
-].join('\n\n');
-
 const translationWorkerRole = (role: string): string =>
   `${TASK_AGENT_ROLE_PREFIX}\n\n${TRANSLATION_WORKER_SHARED}\n\n${role}`;
 
@@ -162,11 +145,11 @@ registerAgentProfile({
 
 registerAgentProfile({
   name: 'translation-coordinator',
-  description: 'Long-running translation Coordinator using the native session, goal, task, and event loop.',
+  description: 'Native Kimi session constrained to translation file and delegation tools.',
   tools: TRANSLATION_COORDINATOR_TOOLS,
   subagents: TRANSLATION_SUBAGENTS,
   renderSystemPrompt: (context) =>
-    renderSystemPromptResult(TRANSLATION_COORDINATOR_ROLE, context, {
+    renderSystemPromptResult('', context, {
       skillActive: skillActiveFor(TRANSLATION_COORDINATOR_TOOLS),
     }),
 });

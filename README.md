@@ -1,11 +1,12 @@
 # Batch Translating
 
+**English** | [中文](README.zh-CN.md)
+
 A Windows desktop workbench for long-form **EPUB/TXT literary translation**, built on top of the Kimi Code agent runtime. Translation is scheduled and steered by a single Coordinator agent; everything else — project state, retry/recovery, retrieval, quality gates, cost accounting and final EPUB rebuild — is backed by persistent, auditable infrastructure instead of prompt promises.
 
 **Version 0.2.0** · Windows (NSIS installer) · Node 24.15.0 · pnpm 10.33.0
 
-> **Status: still in the debugging stage.** Some features may not work as expected yet. Ongoing maintenance is on the way — please wait for the next update.
-> **状态：仍在调试阶段。** 部分功能目前可能无法按预期运行，开发者后续会持续维护，敬请期待。
+Batch Translating can run a complete novel-length translation project with persistent recovery, local retrieval, multi-round review, context compaction, cost tracking, and deterministic EPUB reconstruction.
 
 ```
 用户消息 ─▶ Kimi Web Session ─▶ Coordinator Agent ─▶ 翻译/记忆/审校 Agent Swarm
@@ -21,6 +22,7 @@ A Windows desktop workbench for long-form **EPUB/TXT literary translation**, bui
 - **Real retrieval (no mock RAG)** — a locally hosted Python service runs FlagEmbedding **BGE-M3** (dense + sparse + ColBERT/rerank) with a **Qdrant** vector store, per-project index isolation, canonical character/entity/timeline state, Story Memory, approved-only Translation Memory, spoiler-aware retrieval, and CPU fallback. BGE-M3 is optional; without it the pipeline degrades to a clearly more expensive two-chapter-context + double-review strategy.
 - **Full quality pipeline** — memory extraction/consolidation, translation, three review tracks (fidelity / naturalness / continuity), repair with hash-verified patches, conflict arbitration, and a consistency audit that must resolve all high/critical issues. The final book is rebuilt deterministically from the immutable source, structure-validated, and byte-receipted.
 - **Cost control** — soft/hard project budgets enforced in the ledger, per-request usage accounting keyed to the project, token/cache/price snapshots, and explicit `unavailable` pricing instead of fake zero cost.
+- **Long-running session control** — automatic and manual context compaction keeps novel-length projects manageable; system reminders, reasoning and tool results stay collapsed by default while remaining available on demand.
 - **Desktop polish** — bilingual (中文/English) UI, one-click project creation with your own configured provider/model pinned per project (never silently switched), in-app diagnostics export, and a supervised engine/sidecar process tree under a Windows Job Object.
 
 ## Getting started (development)
@@ -47,13 +49,11 @@ corepack pnpm batch:build
 The NSIS installer is produced by Tauri. Local acceptance builds go to the ignored `dist-desktop/` directory:
 
 ```sh
-node scripts/ci/stage-rag-service.mjs   # stage whitelisted RAG Python sources (no models/venv/cache)
-corepack pnpm batch:desktop:build       # → Batch Translating_0.2.0_x64-setup.exe
+corepack pnpm batch:desktop:release
+# → dist-desktop/Batch Translating_0.2.0_x64-setup.exe
 ```
 
-CI performs the same build in `.github/workflows/batch-windows-build.yml` with a pinned Tauri CLI: content scanning (no models, venvs, caches, tokens, databases or tests in the package) before the NSIS artifact is produced, and no bare desktop exe is uploaded. A `signtool` warning on local machines does not affect SEA injection or startup.
-
-`.github/workflows/batch-release.yml` is a manual, gated release flow — it never auto-fires on push/tag.
+The release helper stages only whitelisted RAG service sources and checks that models, virtual environments, caches, credentials, databases, tests, and local project data do not enter the installer. A local `signtool` warning does not affect SEA injection or startup. The final installer is copied to `dist-desktop/`.
 
 ## Repository layout
 

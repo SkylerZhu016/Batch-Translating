@@ -37,6 +37,10 @@ export interface ModelOverride {
   maxContextSize?: number;
   maxInputSize?: number;
   maxOutputSize?: number;
+  inputPriceUsdPerMillion?: number;
+  outputPriceUsdPerMillion?: number;
+  cacheReadPriceUsdPerMillion?: number;
+  cacheCreationPriceUsdPerMillion?: number;
   capabilities?: string[];
   displayName?: string;
   reasoningKey?: string;
@@ -63,6 +67,10 @@ export interface ModelRecord {
   maxContextSize?: number;
   maxInputSize?: number;
   maxOutputSize?: number;
+  inputPriceUsdPerMillion?: number;
+  outputPriceUsdPerMillion?: number;
+  cacheReadPriceUsdPerMillion?: number;
+  cacheCreationPriceUsdPerMillion?: number;
   capabilities?: string[];
   displayName?: string;
   reasoningKey?: string;

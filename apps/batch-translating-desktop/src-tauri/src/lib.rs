@@ -47,6 +47,21 @@ const RAG_SERVICE_ENV: &str = "BATCH_TRANSLATING_RAG_SERVICE_DIR";
 const PRODUCT_CLI_ENV: &str = "BATCH_TRANSLATING_CLI";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
+const PREFERRED_WINDOW_WIDTH: f64 = 1280.0;
+const PREFERRED_WINDOW_HEIGHT: f64 = 680.0;
+const MIN_WINDOW_WIDTH: f64 = 760.0;
+const MIN_WINDOW_HEIGHT: f64 = 400.0;
+const WINDOW_HORIZONTAL_GUTTER: f64 = 48.0;
+const WINDOW_VERTICAL_GUTTER: f64 = 120.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowGeometry {
+    width: f64,
+    height: f64,
+    min_width: f64,
+    min_height: f64,
+    position: Option<(f64, f64)>,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct RuntimeState {
@@ -389,6 +404,10 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Always show a real window immediately. Engine startup, reuse and
+            // identity checks continue in the background; users must never be
+            // left wondering whether the application launched.
+            open_startup_window(app.handle())?;
             if let Err(error) = build_tray(app.handle()) {
                 eprintln!("could not create the tray icon: {error}");
             }
@@ -597,15 +616,93 @@ fn open_window(app: &AppHandle, url: &str) -> Result<(), String> {
     let parsed = url
         .parse::<Url>()
         .map_err(|_| "翻译引擎返回了无效的工作台地址。".to_string())?;
-    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .navigate(parsed)
+            .map_err(|error| format!("无法连接工作台：{error}"))?;
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let geometry = initial_window_geometry(app);
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
         .title(WINDOW_TITLE)
-        .inner_size(1280.0, 860.0)
-        .min_inner_size(920.0, 620.0)
-        .center()
+        .inner_size(geometry.width, geometry.height)
+        .min_inner_size(geometry.min_width, geometry.min_height);
+    let builder = if let Some((x, y)) = geometry.position {
+        builder.position(x, y)
+    } else {
+        builder.center()
+    };
+    let window = builder
         .build()
         .map_err(|error| format!("无法打开工作台窗口：{error}"))?;
     let _ = window.set_focus();
     Ok(())
+}
+
+fn open_startup_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    if app.get_webview_window("main").is_some() {
+        return Ok(());
+    }
+    let geometry = initial_window_geometry(app);
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title(WINDOW_TITLE)
+        .inner_size(geometry.width, geometry.height)
+        .min_inner_size(geometry.min_width, geometry.min_height);
+    let builder = if let Some((x, y)) = geometry.position {
+        builder.position(x, y)
+    } else {
+        builder.center()
+    };
+    builder.build()?;
+    Ok(())
+}
+
+fn initial_window_geometry(app: &AppHandle) -> WindowGeometry {
+    let work_area = app.primary_monitor().ok().flatten().map(|monitor| {
+        let scale = monitor.scale_factor().max(1.0);
+        let area = monitor.work_area();
+        (
+            area.position.x as f64 / scale,
+            area.position.y as f64 / scale,
+            area.size.width as f64 / scale,
+            area.size.height as f64 / scale,
+        )
+    });
+    window_geometry_for_work_area(work_area)
+}
+
+fn window_geometry_for_work_area(
+    work_area: Option<(f64, f64, f64, f64)>,
+) -> WindowGeometry {
+    let Some((work_x, work_y, work_width, work_height)) = work_area else {
+        return WindowGeometry {
+            width: PREFERRED_WINDOW_WIDTH,
+            height: PREFERRED_WINDOW_HEIGHT,
+            min_width: MIN_WINDOW_WIDTH,
+            min_height: MIN_WINDOW_HEIGHT,
+            position: None,
+        };
+    };
+
+    // The work area excludes the taskbar. Keep an additional gutter for the
+    // native title bar and resize borders, which are outside the requested
+    // inner size and become proportionally larger at high Windows scaling.
+    let width = PREFERRED_WINDOW_WIDTH.min((work_width - WINDOW_HORIZONTAL_GUTTER).max(320.0));
+    let height = PREFERRED_WINDOW_HEIGHT.min((work_height - WINDOW_VERTICAL_GUTTER).max(320.0));
+
+    WindowGeometry {
+        width,
+        height,
+        min_width: MIN_WINDOW_WIDTH.min(width),
+        min_height: MIN_WINDOW_HEIGHT.min(height),
+        position: Some((
+            work_x + (work_width - width) / 2.0,
+            work_y + (work_height - height) / 2.0,
+        )),
+    }
 }
 
 fn monitor_owned_engine(owned_engine: OwnedEngine) {
@@ -1096,7 +1193,8 @@ fn product_home_dir() -> PathBuf {
 
 fn non_empty_env_path(name: &str) -> Option<PathBuf> {
     let value = std::env::var(name).ok()?;
-    (!value.trim().is_empty()).then(|| PathBuf::from(value))
+    let value = value.trim();
+    (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
 fn unix_now() -> u64 {
@@ -1255,6 +1353,13 @@ mod tests {
         });
         with_home_env(
             Some("D:\\batch-home"),
+            Some("D:\\kimi-home"),
+            Some("D:\\user-home"),
+            None,
+            || assert_eq!(product_home_dir(), PathBuf::from("D:\\batch-home")),
+        );
+        with_home_env(
+            Some("  D:\\batch-home  "),
             Some("D:\\kimi-home"),
             Some("D:\\user-home"),
             None,
@@ -1659,5 +1764,23 @@ mod tests {
             workbench_url("http://127.0.0.1:58631", "a b/#"),
             "http://127.0.0.1:58631/#token=a%20b%2F%23"
         );
+    }
+
+    #[test]
+    fn window_geometry_stays_inside_scaled_work_area() {
+        let geometry = window_geometry_for_work_area(Some((0.0, 0.0, 1092.8, 582.4)));
+        assert!((geometry.width - 1044.8).abs() < 0.000_001);
+        assert!((geometry.height - 462.4).abs() < 0.000_001);
+        assert_eq!(geometry.min_width, MIN_WINDOW_WIDTH);
+        assert_eq!(geometry.min_height, MIN_WINDOW_HEIGHT);
+        let (x, y) = geometry.position.expect("scaled work area has a position");
+        assert!((x - 24.0).abs() < 0.000_001);
+        assert!((y - 60.0).abs() < 0.000_001);
+
+        let constrained = window_geometry_for_work_area(Some((0.0, 0.0, 640.0, 360.0)));
+        assert_eq!(constrained.width, 592.0);
+        assert_eq!(constrained.height, 320.0);
+        assert_eq!(constrained.min_width, 592.0);
+        assert_eq!(constrained.min_height, 320.0);
     }
 }

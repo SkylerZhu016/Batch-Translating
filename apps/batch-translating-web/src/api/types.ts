@@ -614,6 +614,24 @@ export interface KimiEventConnection {
 // PRESUMED — not in current daemon docs; isolated in adapter, swap when backend defines them.
 // ---------------------------------------------------------------------------
 
+export interface AppModelPricing {
+  /** Explicit user-supplied USD prices per one million tokens. */
+  currency: 'USD';
+  inputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+  /** When omitted, accounting uses the input rate and records that fallback. */
+  cacheReadUsdPerMillion?: number;
+  /** When omitted, accounting uses the input rate and records that fallback. */
+  cacheCreationUsdPerMillion?: number;
+}
+
+export interface ProviderModelConfigInput {
+  model: string;
+  maxContextSize?: number;
+  /** undefined preserves existing pricing; null explicitly clears it. */
+  pricing?: AppModelPricing | null;
+}
+
 export interface AppModel {
   /** Unique identifier for this model (the string passed to PATCH session agent_config.model) */
   id: string;
@@ -632,6 +650,8 @@ export interface AppModel {
   supportEfforts?: readonly string[];
   /** Catalog-declared default effort for extended thinking. */
   defaultEffort?: string;
+  /** Absent means monetary cost is unknown; token usage is still recorded. */
+  pricing?: AppModelPricing;
 }
 
 export interface AppProvider {
@@ -965,8 +985,8 @@ export interface KimiWebApi {
   // PRESUMED — not in current daemon docs; isolated in adapter, swap when backend defines them.
   listModels(): Promise<AppModel[]>;
   listProviders(): Promise<AppProvider[]>;
-  addProvider(input: { id: string; type: string; apiKey?: string; baseUrl?: string; defaultModel?: string; models: Array<{ model: string; maxContextSize?: number }> }): Promise<AppProvider>;
-  replaceProvider(id: string, input: { newId?: string; type: string; apiKey?: string; baseUrl?: string; defaultModel?: string; models: Array<{ model: string; maxContextSize?: number }> }): Promise<AppProvider>;
+  addProvider(input: { id: string; type: string; apiKey?: string; baseUrl?: string; defaultModel?: string; models: ProviderModelConfigInput[] }): Promise<AppProvider>;
+  replaceProvider(id: string, input: { newId?: string; type: string; apiKey?: string; baseUrl?: string; defaultModel?: string; models: ProviderModelConfigInput[] }): Promise<AppProvider>;
   deleteProvider(id: string): Promise<{ deleted: true }>;
   refreshProvider(id: string): Promise<ProviderRefreshResult>;
   refreshAllProviders(): Promise<ProviderRefreshResult>;

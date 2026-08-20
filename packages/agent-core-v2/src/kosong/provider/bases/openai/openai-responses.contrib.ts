@@ -12,7 +12,13 @@ import { registerProtocolBase } from '#/kosong/protocol/protocolBase';
 import { traitConvertError, traitDefaultHeaders } from '#/kosong/protocol/protocolTrait';
 
 import { getOpenAIResponsesModelCapability, OpenAIResponsesChatProvider } from './openai-responses';
-import { compactObject, firstProcessEnv, traitEndpoint, traitProvides } from './openaiHooks';
+import {
+  compactObject,
+  firstProcessEnv,
+  normalizeOpenAIBaseUrl,
+  traitEndpoint,
+  traitProvides,
+} from './openaiHooks';
 
 registerProtocolBase({
   id: 'openai_responses',
@@ -29,8 +35,9 @@ registerProtocolBase({
           config.apiKey ??
           firstProcessEnv(endpoint?.apiKeyEnv) ??
           (endpoint === undefined ? undefined : ''),
-        baseUrl:
+        baseUrl: normalizeOpenAIBaseUrl(
           config.baseUrl ?? firstProcessEnv(endpoint?.baseUrlEnv) ?? endpoint?.defaultBaseUrl,
+        ),
         defaultHeaders: traitDefaultHeaders(traits),
         maxOutputTokens: config.providerOptions?.defaultMaxTokens,
         offEffort: config.providerOptions?.offEffort,

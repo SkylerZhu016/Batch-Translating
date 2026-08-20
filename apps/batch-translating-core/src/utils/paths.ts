@@ -36,7 +36,9 @@ export function getDataDir(): string {
   const envDir = [
     process.env[BATCH_TRANSLATING_HOME_ENV],
     process.env[KIMI_CODE_HOME_ENV],
-  ].find((value) => value !== undefined && value.trim().length > 0);
+  ]
+    .map((value) => value?.trim())
+    .find((value) => value !== undefined && value.length > 0);
   return envDir ?? join(homedir(), KIMI_CODE_DATA_DIR_NAME);
 }
 

@@ -14,6 +14,7 @@ import {
   IConfigService,
   IEventService,
   IFileService,
+  IModelCatalog,
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
@@ -268,6 +269,22 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     homeDir,
     fileService: core.accessor.get(IFileService),
     logger,
+    resolveModelPricing: async ({ modelId, providerId }) => {
+      const model = (await core.accessor.get(IModelCatalog).listModels())
+        .find((item) => item.model === modelId && item.provider === providerId);
+      if (model?.pricing === undefined) return undefined;
+      return {
+        currency: model.pricing.currency,
+        inputUsdPerMillion: model.pricing.input_usd_per_million,
+        outputUsdPerMillion: model.pricing.output_usd_per_million,
+        ...(model.pricing.cache_read_usd_per_million === undefined ? {} : {
+          cacheReadUsdPerMillion: model.pricing.cache_read_usd_per_million,
+        }),
+        ...(model.pricing.cache_creation_usd_per_million === undefined ? {} : {
+          cacheCreationUsdPerMillion: model.pricing.cache_creation_usd_per_million,
+        }),
+      };
+    },
   });
 
   // Attach the cloud telemetry appender BEFORE any session is created:
@@ -428,6 +445,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     logger,
     transcriptService,
     onAgentUsage: (usage) => translationRuntime.recordAgentUsage(usage),
+    onAgentRequestStart: async (input) => {
+      const notification = await translationRuntime.assertPaidWorkAllowed(input.sessionCustom);
+      return notification === undefined ? undefined : { notification };
+    },
   });
   const fsWatchBridge = new FsWatchBridge({ core, logger });
 

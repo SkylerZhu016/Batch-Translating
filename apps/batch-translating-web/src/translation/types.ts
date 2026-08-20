@@ -8,6 +8,23 @@ export type TranslationProjectSchemaVersion = typeof TRANSLATION_PROJECT_SCHEMA_
 
 export type TranslationSourceKind = 'epub' | 'txt';
 
+export type TranslationSourceLanguage = string;
+export type TranslationTargetLanguage = 'zh-CN' | 'en';
+
+export interface TranslationLanguageSettings {
+  source: TranslationSourceLanguage;
+  target: TranslationTargetLanguage;
+}
+
+export interface TranslationOutputMilestone {
+  round: number;
+  path: string;
+  sha256: string;
+  byteLength: number;
+  structuralValidationPassed: true;
+  recordedAt: string;
+}
+
 export type ProjectRunStatus =
   | 'draft'
   | 'ready'
@@ -426,6 +443,12 @@ export interface TranslationProject {
   schemaVersion: TranslationProjectSchemaVersion;
   projectId: string;
   name: string;
+  /** Source can be auto-detected; target is deliberately limited to Chinese or English. */
+  languages: TranslationLanguageSettings;
+  /** Round one is the first complete edition; later rounds are normal messages in this session. */
+  revisionRound: number;
+  latestOutput?: TranslationOutputMilestone;
+  outputHistory: TranslationOutputMilestone[];
   /** Model pinned for every paid Coordinator turn. Optional only for legacy imports. */
   model?: string;
   /** Optional only for legacy projects created before the native Coordinator. */

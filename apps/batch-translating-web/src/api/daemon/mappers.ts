@@ -741,6 +741,17 @@ export function toAppModel(wire: WireModel): AppModel {
     capabilities: wire.capabilities,
     supportEfforts: wire.support_efforts,
     defaultEffort: wire.default_effort,
+    pricing: wire.pricing === undefined ? undefined : {
+      currency: wire.pricing.currency,
+      inputUsdPerMillion: wire.pricing.input_usd_per_million,
+      outputUsdPerMillion: wire.pricing.output_usd_per_million,
+      ...(wire.pricing.cache_read_usd_per_million === undefined ? {} : {
+        cacheReadUsdPerMillion: wire.pricing.cache_read_usd_per_million,
+      }),
+      ...(wire.pricing.cache_creation_usd_per_million === undefined ? {} : {
+        cacheCreationUsdPerMillion: wire.pricing.cache_creation_usd_per_million,
+      }),
+    },
   };
 }
 

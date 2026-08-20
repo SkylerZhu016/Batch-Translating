@@ -4,7 +4,6 @@ import {
   appendUserOverride,
   assertProtectedMinimum,
   buildStagePlan,
-  buildStagePrompt,
   createTranslationProject,
   joinLocalPath,
   MAX_SWARM_AGENTS,
@@ -13,9 +12,11 @@ import {
   parseProjectMetadata,
   parseProjectMetadataJson,
   planFingerprint,
+  sameLocalPath,
   serializeProjectMetadata,
   setUserOverrideStatus,
   TRANSLATION_PROMPT_VERSION,
+  verifiedTranslationOutputPath,
   type TranslationProject,
   type WorkflowOptions,
 } from './index';
@@ -131,7 +132,6 @@ describe('deterministic translation stage plan', () => {
     expect(normalizeMaxAgents(Number.NaN)).toBe(MIN_SWARM_AGENTS);
   });
 });
-
 describe('translation project metadata', () => {
   it('creates an immutable source contract and Windows-safe project paths', () => {
     const value = project();
@@ -144,6 +144,57 @@ describe('translation project metadata', () => {
     expect(value.paths.finalOutputPath).toBe('D:\\Translations\\example\\final\\book.zh-CN.epub');
     expect(value.promptVersion).toBe(TRANSLATION_PROMPT_VERSION);
     expect(value.planFingerprint).toBe(planFingerprint(value.stages.map((stage) => stage.definition)));
+  });
+
+  it('supports a user-entered source language and limits the target to Chinese or English', () => {
+    const value = createTranslationProject({
+      projectId: 'translation_english',
+      name: 'English edition',
+      languages: { source: 'Japanese', target: 'en' },
+      sourcePath: 'D:\\Books\\novel.epub',
+      projectRoot: 'D:\\Translations\\english',
+      workflow: requiredOnly,
+      maxAgents: 8,
+      now: '2026-08-20T00:00:00.000Z',
+    });
+    expect(value.languages).toEqual({ source: 'Japanese', target: 'en' });
+    expect(value.paths.finalOutputPath).toBe('D:\\Translations\\english\\final\\book.en.epub');
+
+    expect(() => createTranslationProject({
+      name: 'Same language',
+      languages: { source: 'en', target: 'en' },
+      sourcePath: 'D:\\Books\\novel.epub',
+      projectRoot: 'D:\\Translations\\same',
+      workflow: requiredOnly,
+      maxAgents: 8,
+    })).toThrow('must be different');
+  });
+
+  it('accepts only structurally verified current output milestones', () => {
+    const output = {
+      round: 1,
+      path: 'D:\\Translations\\example\\final\\book.zh-CN.epub',
+      sha256: 'a'.repeat(64),
+      byteLength: 4096,
+      structuralValidationPassed: true as const,
+      recordedAt: '2026-08-20T01:00:00.000Z',
+    };
+    const completed = project({
+      status: 'completed',
+      latestOutput: output,
+      outputHistory: [output],
+    });
+    expect(parseProjectMetadata(completed).ok).toBe(true);
+    expect(verifiedTranslationOutputPath(completed)).toBe(output.path);
+
+    const malformed = {
+      ...completed,
+      outputHistory: [null],
+    };
+    const parsed = parseProjectMetadata(malformed);
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errors).toContain('outputHistory[0] must be an object');
   });
 
   it('creates a TXT project with a kind-specific plan, paths, and chapter pattern', () => {
@@ -227,6 +278,17 @@ describe('translation project metadata', () => {
     expect(joinLocalPath('/', 'state', 'book_manifest.json')).toBe('/state/book_manifest.json');
   });
 
+  it('treats Windows runtime separators as equivalent without weakening the path check', () => {
+    expect(sameLocalPath(
+      'D:\\Translations\\example\\source\\book.epub',
+      'D:/Translations/example/source/book.epub',
+    )).toBe(true);
+    expect(sameLocalPath(
+      'D:\\Translations\\other\\source\\book.epub',
+      'D:/Translations/example/source/book.epub',
+    )).toBe(false);
+  });
+
   it('round-trips valid metadata through the strict parser', () => {
     const serialized = serializeProjectMetadata(project());
     const parsed = parseProjectMetadataJson(serialized);
@@ -250,7 +312,6 @@ describe('translation project metadata', () => {
     }
   });
 });
-
 describe('versioned user overrides', () => {
   it('appends without mutating the plan and supersedes a queued override of the same scope', () => {
     const original = project({ activeStageId: 'translation-1' });
@@ -313,109 +374,5 @@ describe('versioned user overrides', () => {
       appliedAt: '2026-08-13T00:02:00.000Z',
     });
     expect(activeUserOverrides(applied, 3)).toHaveLength(1);
-  });
-});
-
-describe('versioned stage prompt builder', () => {
-  it('spells out ZIP parsing, protected rounds, edge cases, and fixed swarm ownership', () => {
-    const value = project();
-    const bundle = buildStagePrompt({
-      project: value,
-      stageId: 'translation-1',
-      paths: value.paths,
-      maxAgents: 16,
-      tasks: [{
-        taskId: 'task_ch001',
-        chapterId: 'ch001',
-        paragraphIds: ['ch001-p0001'],
-        sourcePath: 'D:\\Translations\\example\\source\\ch001.xhtml',
-        outputPath: 'D:\\Translations\\example\\translation\\ch001.json',
-        sourceHash: 'sha256-example',
-        snapshotId: 'snapshot-1',
-        attemptNumber: 1,
-      }],
-    });
-    expect(bundle.promptVersion).toBe(TRANSLATION_PROMPT_VERSION);
-    expect(bundle.fullPrompt).toContain('ZIP/OCF 压缩容器');
-    expect(bundle.fullPrompt).toContain('META-INF/container.xml');
-    expect(bundle.fullPrompt).toContain('不得自行增加、删除、跳过、重复');
-    expect(bundle.fullPrompt).toContain('429、timeout、connection failure');
-    expect(bundle.fullPrompt).toContain('conflict set');
-    expect(bundle.fullPrompt).toContain('不得提前揭示身份、秘密、伏笔答案');
-    expect(bundle.fullPrompt).toContain('task_ch001');
-    expect(bundle.fullPrompt).toContain('同时 worker 上限固定为 1');
-    expect(bundle.fullPrompt).toContain('run_in_background=false');
-  });
-
-  it('rejects an unknown stage or a per-run swarm limit above project configuration', () => {
-    const value = project();
-    expect(() => buildStagePrompt({
-      project: value,
-      stageId: 'made-up',
-      paths: value.paths,
-      maxAgents: 16,
-      tasks: [],
-    })).toThrow('Unknown stage');
-    expect(() => buildStagePrompt({
-      project: value,
-      stageId: 'translation-1',
-      paths: value.paths,
-      maxAgents: 17,
-      tasks: [],
-    })).toThrow('cannot exceed');
-  });
-
-  it('switches parse/export instructions and format rules for TXT projects', () => {
-    const value = createTranslationProject({
-      projectId: 'translation_txt',
-      name: 'Plain text book',
-      sourcePath: 'D:\\Books\\novel.txt',
-      projectRoot: 'D:\\Translations\\novel',
-      workflow: requiredOnly,
-      maxAgents: 8,
-      now: '2026-08-13T00:00:00.000Z',
-    });
-    const parseBundle = buildStagePrompt({
-      project: value,
-      stageId: 'parse-txt',
-      paths: value.paths,
-      maxAgents: 8,
-      tasks: [],
-    });
-    expect(parseBundle.fullPrompt).toContain('TXT 处理手册（用工具直接执行，不依赖任何随附脚本）');
-    expect(parseBundle.fullPrompt).toContain('第X章/节/回/卷/部/篇');
-    expect(parseBundle.fullPrompt).toContain('GB18030');
-    expect(parseBundle.fullPrompt).not.toContain('META-INF/container.xml');
-
-    const translateBundle = buildStagePrompt({
-      project: value,
-      stageId: 'translation-1',
-      paths: value.paths,
-      maxAgents: 8,
-      tasks: [],
-    });
-    expect(translateBundle.fullPrompt).toContain('章节文件是纯文本');
-
-    const exportBundle = buildStagePrompt({
-      project: value,
-      stageId: 'export-txt',
-      paths: value.paths,
-      maxAgents: 8,
-      tasks: [],
-    });
-    expect(exportBundle.fullPrompt).toContain('重建简体中文 TXT');
-    expect(exportBundle.fullPrompt).toContain('finalOutputPath');
-    expect(exportBundle.fullPrompt).not.toContain('mimetype');
-
-    // EPUB projects keep the ZIP-specific wording.
-    const epubParse = buildStagePrompt({
-      project: project(),
-      stageId: 'parse-epub',
-      paths: project().paths,
-      maxAgents: 16,
-      tasks: [],
-    });
-    expect(epubParse.fullPrompt).toContain('META-INF/container.xml');
-    expect(epubParse.fullPrompt).not.toContain('GB18030');
   });
 });

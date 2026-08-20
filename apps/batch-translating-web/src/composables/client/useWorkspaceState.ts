@@ -1672,7 +1672,12 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     sid: string,
     text: string,
     attachments?: PromptAttachment[],
-    options?: { permissionMode?: PermissionMode },
+    options?: {
+      permissionMode?: PermissionMode;
+      throwOnFailure?: boolean;
+      /** A native goal owns the session even if the UI is between continuation turns. */
+      goalActive?: boolean;
+    },
   ): Promise<void> {
 
     // Merge queued texts (oldest first) + the live text, like the TUI does.
@@ -1702,10 +1707,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       rawState.queuedBySession = { ...rawState.queuedBySession, [sid]: [...queue, ...current] };
     };
 
-    // Idle and nothing in flight — there is no turn to steer into; normal send.
+    // Outside a native goal, idle and nothing in flight means there is no turn
+    // to steer into, so this is a normal send. An active goal is different: the
+    // engine may look idle at the continuation boundary while still owning the
+    // session. Kimi Code uses session.steer there as well; forcing the two-step
+    // submit+steer path prevents the message from waiting behind the whole goal.
     const targetSession = rawState.sessions.find((session) => session.id === sid);
     const targetHasWork = targetSession?.mainTurnActive === true || targetSession?.busy === true;
-    if (!targetHasWork && !rawState.inFlightBySession[sid]) {
+    if (!options?.goalActive && !targetHasWork && !rawState.inFlightBySession[sid]) {
       const outcome = await submitPromptInternal(sid, merged, mergedAttachments, options);
       // Same never-duplicate rule as the running-path catch below: restore
       // the merged entries only on a definitive rejection.
@@ -1740,6 +1749,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     updateSessionMessages(sid, (msgs) => [...msgs, optimisticMsg]);
 
     const localTurnToken = beginLocalTurn(sid);
+    let deferredSteerFailure: { error: unknown } | undefined;
     try {
       const api = getKimiWebApi();
       const promptSession = rawState.sessions.find((s) => s.id === sid);
@@ -1780,9 +1790,18 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
       try {
         await api.steerPrompts(sid, [result.promptId]);
-      } catch {
-        // The active turn finished between submit and steer — the daemon starts
-        // the parked prompt as its own turn. Nothing to roll back.
+      } catch (err) {
+        if (isDaemonApiError(err) && err.code === PROMPT_NOT_FOUND_CODE) {
+          // The active turn finished between submit and steer — the daemon
+          // starts the parked prompt as its own turn. Nothing to roll back.
+        } else {
+          // Submit already succeeded, so keep the optimistic echo and do not
+          // restore the merged queue: the prompt may still be parked server-
+          // side. Surface every genuine steer failure, and let callers that
+          // requested strict delivery handling report it in their own flow.
+          pushOperationFailure('steer', err, { sessionId: sid });
+          if (options?.throwOnFailure) deferredSteerFailure = { error: err };
+        }
       }
     } catch (err) {
       // Submit failed: drop the optimistic echo so the transcript doesn't show
@@ -1796,9 +1815,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // prevent). The failure toast below tells the user what happened.
       if (isDaemonApiError(err)) restoreQueue();
       pushOperationFailure('steer', err, { sessionId: sid });
+      if (options?.throwOnFailure) throw err;
     } finally {
       settleLocalTurn(sid, localTurnToken);
     }
+    if (deferredSteerFailure !== undefined) throw deferredSteerFailure.error;
   }
 
   async function steerPrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {

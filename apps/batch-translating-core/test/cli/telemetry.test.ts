@@ -93,10 +93,10 @@ describe('initializeServerTelemetry', () => {
         setContext: expect.any(Function),
       }),
     );
-    // The first dynamic import pulls in the whole SDK/oauth chain (~3s idle,
-    // more under full-suite transform contention) — give it headroom past the
-    // 5s default timeout.
-  }, 20000);
+    // The first dynamic import pulls in the whole SDK/oauth chain and can take
+    // close to 20s on a cold Windows worker. Full-suite transform contention
+    // needs additional headroom; the assertions still verify the same result.
+  }, 60000);
 
   it('disables telemetry when config.toml sets telemetry = false', async () => {
     mocks.loadRuntimeConfigSafe.mockReturnValue({

@@ -17,6 +17,7 @@ import type {
   ThinkingLevel,
 } from '../../api/types';
 import { safeGetString, safeSetString, STORAGE_KEYS } from '../../lib/storage';
+import { normalizeProviderBaseUrl } from '../../lib/providerBaseUrl';
 import {
   defaultThinkingLevelFor,
   levelDeclaredBy,
@@ -481,7 +482,10 @@ export function useModelProviderState(
   }): Promise<void> {
     try {
       const api = getKimiWebApi();
-      await api.addProvider(input);
+      await api.addProvider({
+        ...input,
+        baseUrl: normalizeProviderBaseUrl(input.type, input.baseUrl),
+      });
       await Promise.all([loadProviders(), loadModels()]);
     } catch (err) {
       pushOperationFailure('addProvider', err);
@@ -525,7 +529,10 @@ export function useModelProviderState(
   }): Promise<void> {
     try {
       const api = getKimiWebApi();
-      await api.replaceProvider(id, input);
+      await api.replaceProvider(id, {
+        ...input,
+        baseUrl: normalizeProviderBaseUrl(input.type, input.baseUrl),
+      });
       await Promise.all([loadProviders(), loadModels()]);
     } catch (err) {
       pushOperationFailure('replaceProvider', err);

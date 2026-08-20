@@ -6,6 +6,7 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import type { ModelRequestTiming } from '#/kosong/model/modelRequester';
 import type { LogContext } from '#/_base/log/log';
+import type { IDisposable } from '#/_base/di/lifecycle';
 
 export type AgentLLMRequestLogFields = Readonly<LogContext>;
 
@@ -36,6 +37,10 @@ export interface AgentLLMRequestFinish {
 
 export type AgentLLMRequestPartHandler = (part: StreamedMessagePart) => void | Promise<void>;
 
+export type AgentLLMRequestGuard = (
+  source: AgentLLMRequestSource | undefined,
+) => void | Promise<void>;
+
 export interface AgentLLMRequestOverrides {
   messages?: readonly Message[];
   tools?: readonly Tool[];
@@ -57,6 +62,8 @@ export interface IAgentLLMRequesterService {
   readonly _serviceBrand: undefined;
 
   prepareTurnConfig(turnId: number): PreparedTurnRequestConfig | undefined;
+
+  registerRequestGuard(guard: AgentLLMRequestGuard): IDisposable;
 
   request(
     overrides?: AgentLLMRequestOverrides,

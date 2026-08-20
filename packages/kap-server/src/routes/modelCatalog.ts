@@ -219,6 +219,45 @@ async function seedDefaultModelWhenUnset(config: IConfigService, alias: string):
   await config.replace(DEFAULT_MODEL_SECTION, alias);
 }
 
+const MODEL_PRICE_OVERRIDE_KEYS = [
+  'inputPriceUsdPerMillion',
+  'outputPriceUsdPerMillion',
+  'cacheReadPriceUsdPerMillion',
+  'cacheCreationPriceUsdPerMillion',
+] as const;
+
+/**
+ * Price values are user-owned model overrides. Keeping them in `overrides`
+ * means a later provider discovery refresh can replace catalog metadata
+ * without silently erasing the user's budget configuration.
+ */
+function applyModelPricingOverride(
+  alias: ModelRecord,
+  pricing: {
+    currency: 'USD';
+    input_usd_per_million: number;
+    output_usd_per_million: number;
+    cache_read_usd_per_million?: number;
+    cache_creation_usd_per_million?: number;
+  } | null | undefined,
+): void {
+  // Omission means the caller does not own this field (old clients and
+  // metadata refreshes): preserve the existing user override. `null` is the
+  // explicit clear sent by the current settings UI.
+  if (pricing === undefined) return;
+  const overrides = { ...(alias.overrides ?? {}) };
+  for (const key of MODEL_PRICE_OVERRIDE_KEYS) overrides[key] = undefined;
+  if (pricing !== null) {
+    overrides.inputPriceUsdPerMillion = pricing.input_usd_per_million;
+    overrides.outputPriceUsdPerMillion = pricing.output_usd_per_million;
+    overrides.cacheReadPriceUsdPerMillion = pricing.cache_read_usd_per_million;
+    overrides.cacheCreationPriceUsdPerMillion = pricing.cache_creation_usd_per_million;
+  }
+  alias.overrides = Object.values(overrides).some((value) => value !== undefined)
+    ? overrides
+    : undefined;
+}
+
 export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Scope): void {
   const listModelsRoute = defineRoute(
     {
@@ -364,6 +403,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
             alias.supportEfforts = [...entry.support_efforts];
           if (entry.adaptive_thinking !== undefined)
             alias.adaptiveThinking = entry.adaptive_thinking;
+          applyModelPricingOverride(alias, entry.pricing);
           aliases[`${id}/${entry.model}`] = alias;
         }
         await config.set(MODELS_SECTION, aliases);
@@ -541,6 +581,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
             entry.support_efforts !== undefined ? [...entry.support_efforts] : undefined;
           alias.adaptiveThinking =
             entry.adaptive_thinking !== undefined ? entry.adaptive_thinking : undefined;
+          applyModelPricingOverride(alias, entry.pricing);
           nextModels[`${newId}/${entry.model}`] = alias;
         }
         await config.replace(MODELS_SECTION, nextModels);
@@ -964,4 +1005,3 @@ async function handleImportRegistry(
     throw err;
   }
 }
-

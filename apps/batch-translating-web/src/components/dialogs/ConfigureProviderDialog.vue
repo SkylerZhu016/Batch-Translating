@@ -10,6 +10,7 @@ import Input from '../ui/Input.vue';
 import Select from '../ui/Select.vue';
 import Icon from '../ui/Icon.vue';
 import Banner from '../ui/Banner.vue';
+import { normalizeProviderBaseUrl, providerModelsUrl } from '../../lib/providerBaseUrl';
 
 const props = withDefaults(defineProps<{
   open: boolean;
@@ -36,6 +37,10 @@ const emit = defineEmits<{
   close: [];
 }>();
 const { t } = useI18n();
+const modelCollator = new Intl.Collator('en', {
+  numeric: true,
+  sensitivity: 'base',
+});
 
 const form = reactive({
   type: props.initialType || 'openai',
@@ -77,22 +82,8 @@ async function fetchUpstreamModels(): Promise<string[]> {
   successMsg.value = '';
   fetchedModels.value = [];
 
-  const rawBase = form.baseUrl.trim();
   const apiKey = form.apiKey.trim();
-
-  let targetUrl = '';
-  if (rawBase) {
-    targetUrl = rawBase.replace(/\/+$/, '');
-    if (!targetUrl.endsWith('/models') && !targetUrl.endsWith('/v1')) {
-      targetUrl = `${targetUrl}/v1/models`;
-    } else if (targetUrl.endsWith('/v1')) {
-      targetUrl = `${targetUrl}/models`;
-    }
-  } else {
-    if (form.type === 'anthropic') targetUrl = 'https://api.anthropic.com/v1/models';
-    else if (form.type === 'google-genai') targetUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
-    else targetUrl = 'https://api.openai.com/v1/models';
-  }
+  const targetUrl = providerModelsUrl(form.type, form.baseUrl);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -119,7 +110,8 @@ async function fetchUpstreamModels(): Promise<string[]> {
   const list = data.data || data.models || [];
   const modelIds = list
     .map((item) => item.id)
-    .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()));
+    .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()))
+    .sort((left, right) => modelCollator.compare(left, right));
 
   return modelIds;
 }
@@ -177,7 +169,7 @@ async function onSave(): Promise<void> {
     emit('success', {
       id: newProviderId(),
       type: form.type,
-      baseUrl: form.baseUrl.trim(),
+      baseUrl: normalizeProviderBaseUrl(form.type, form.baseUrl) ?? '',
       apiKey: form.apiKey.trim(),
       defaultModel: selectedDefaultModel.value,
       models: models.map((model) => ({ model, maxContextSize: DEFAULT_CONTEXT_SIZE })),
