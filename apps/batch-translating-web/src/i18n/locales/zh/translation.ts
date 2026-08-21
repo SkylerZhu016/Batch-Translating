@@ -182,6 +182,7 @@ export default {
     pageNext: '下一页',
     pageLabel: '第 {page}/{pages} 页',
     pause: '安全暂停',
+    start: '开始运行',
     resume: '继续运行',
     openIssues: '查看问题',
     openOutput: '打开成品',

@@ -182,6 +182,7 @@ export default {
     pageNext: 'Next',
     pageLabel: 'Page {page} of {pages}',
     pause: 'Pause safely',
+    start: 'Start',
     resume: 'Resume',
     openIssues: 'View issues',
     openOutput: 'Open output',

@@ -806,18 +806,11 @@ function showDetails(project: ViewProject): void {
   showProjectDetails.value = true;
 }
 
-async function continueProject(project: ViewProject): Promise<void> {
+async function openProjectSession(project: ViewProject): Promise<void> {
   const entry = entryForViewProject(project);
   if (!entry) return;
   showProjectDetails.value = false;
-  selectedSessionId.value = entry.sessionId;
-  await runner.selectTranslationProject(entry.sessionId);
-  activeView.value = 'agent-console';
-  if (entry.project.status === 'draft' || entry.project.status === 'ready') {
-    await runner.startTranslationRun(entry.sessionId);
-  } else if (entry.project.status !== 'running' && entry.project.status !== 'completed') {
-    await runner.resumeTranslationRun(entry.sessionId);
-  }
+  await selectProject(entry.sessionId, 'run');
 }
 
 async function deleteProject(project: ViewProject): Promise<void> {
@@ -854,6 +847,8 @@ async function togglePause(): Promise<void> {
   if (!entry) return;
   if (entry.project.status === 'running') {
     await runner.pauseTranslationRun(entry.sessionId);
+  } else if (entry.project.status === 'draft' || entry.project.status === 'ready') {
+    await runner.startTranslationRun(entry.sessionId);
   } else {
     await runner.resumeTranslationRun(entry.sessionId);
   }
@@ -1178,7 +1173,7 @@ function setUiFont(value: string): void {
         @create="openCreateDialog"
         @details="showDetails"
         @delete="deleteProject"
-        @continue="continueProject"
+        @continue="openProjectSession"
         @open-output="openProjectOutput"
       />
 
@@ -1338,7 +1333,7 @@ function setUiFont(value: string): void {
       v-if="showMainUi"
       v-model:open="showProjectDetails"
       :project="selectedViewProject"
-      @continue="continueProject"
+      @continue="openProjectSession"
       @open-output="openProjectOutput"
       @delete="deleteProject"
     />

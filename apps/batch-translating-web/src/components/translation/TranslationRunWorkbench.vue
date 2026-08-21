@@ -76,7 +76,11 @@ const { t } = useI18n();
           @click="emit('toggle-pause')"
         >
           <Icon :name="project.status === 'running' ? 'pause' : 'play'" size="sm" />
-          {{ project.status === 'running' ? t('translation.run.pause') : t('translation.run.resume') }}
+          {{ project.status === 'running'
+            ? t('translation.run.pause')
+            : project.status === 'draft'
+              ? t('translation.run.start')
+              : t('translation.run.resume') }}
         </Button>
       </div>
     </header>
